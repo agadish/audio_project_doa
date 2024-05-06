@@ -106,7 +106,7 @@ def load_source_signals(source_dir='source_signals/LibriSpeech/dev-clean', batch
 
             # Resample if needed
             if sample_rate != FS:
-                waveform = torchaudio.transforms.Resample(sample_rate, fs)(waveform)
+                waveform = torchaudio.transforms.Resample(sample_rate, FS)(waveform)
 
             # Append waveform to list
             speaker_signals.append(waveform)
