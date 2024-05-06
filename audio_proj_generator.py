@@ -311,9 +311,10 @@ def calculate_rtf(mic_signals, discard_dc=True):
     rtf = torch.cat((torch.real(rtf), torch.imag(rtf)), dim=-1)
 
     # Get magnitude tensor of the reference microphone
-    ref_mag = ref_mic.squeeze(axis=-1).abs()
-
-    return rtf, ref_mag
+    # ref_stft = ref_mic.squeeze(axis=-1).abs() # XXX: old
+    ref_stft = ref_mic.squeeze(axis=-1)
+    
+    return rtf, ref_stft
 
 
 def calculate_target(signals, doas, discard_dc):
@@ -523,15 +524,16 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
         mixed_signals = mix_rirs(perceived_signals=perceived_signals, interfere=False)
 
     # Calculate RTFs and reference microphone magnitude tensor
-    samples, ref_mag = calculate_rtf(mixed_signals, discard_dc=discard_dc)
+    samples, ref_stft = calculate_rtf(mixed_signals, discard_dc=discard_dc)
 
     # Calculate target
     target = calculate_target(signals=audio_signals, doas=doas, discard_dc=discard_dc)
 
-    return samples, ref_mag, target
+    return samples, ref_stft, target
 
 
-res = torch.stack([generate_batch(batch_size=64) for _ in range(10)])
-with open('train_data.pt', 'wb') as f:
-    torch.save(res, f)
-# generate_batch(batch_size=64, test=True)
+# res = torch.stack([generate_batch(batch_size=64) for _ in range(10)])
+# with open('train_data.pt', 'wb') as f:
+    # torch.save(res, f)
+# generate_batch(batch_size=5)
+generate_batch(batch_size=5, test=True)
