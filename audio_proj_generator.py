@@ -3,53 +3,18 @@ import os
 import torch
 import torchaudio
 from torchaudio.transforms import Resample, Spectrogram
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 import pandas as pd
+from torch.utils.data import Dataset
 import scipy
 from dataclasses import dataclass
 from functools import cached_property
 
-C = 343  # Sound velocity
-FS = int(16e3)  # Sample rate [KHz]
-SIGNAL_LEN_SECS = 9  # Fixed length of audio signals [s]
-SIGNAL_LEN = int(SIGNAL_LEN_SECS * FS)  # Fixed length of audio signals [samples]
-NUM_MICS = 8  # Number of microphones
-L = (6.0, 6.0, 2.4)  # Room dimensions [x y z] (m)
-MIC_ARRAY_POS = ((2.87, 1.0, 1.5), (2.9, 1.0, 1.5), (2.93, 1.0, 1.5), (2.96, 1.0, 1.5),
-                 (3.04, 1.0, 1.5), (3.07, 1.0, 1.5), (3.1, 1.0, 1.5), (3.13, 1.0, 1.5))  # Mics' positions
-MIC_ARRAY_CENTER = (3.0, 1.0, 1.5)
-ANGLE_RES = 15  # Circular source setup's angle resolution [deg]
-ANGLE_LOW = 0  # Circular source setup's lowest possible angle [deg]
-ANGLE_HIGH = 180  # Circular source setup's highest possible angle [deg]
-SPEAKER_HEIGHT = torch.tensor(1.75)  # Height of each sound source [m]
-EPS = 1e-9  # Epsilon to avoid 0 values in numerical calculations
+from config import ANGLE_HIGH, ANGLE_LOW, ANGLE_RES, C, DIM, ENABLE_HPF, EPS, HOP_LENGTH, MIC_ARRAY_CENTER, MIC_ARRAY_POS, MTYPE, NFFT, NSAMPLE, NUM_MICS, ORDER, ORIENTATION, SIGNAL_LEN, SPEAKER_HEIGHT, TEST_RADII, TEST_REVERB_TIMES, TRAIN_RAD_MEAN, TRAIN_RAD_VAR, TRAIN_REVERB_TIMES, TRAIN_SIR_HIGH, TRAIN_SIR_LOW, FS, L
 
-ENABLE_HPF = True  # Enable HPF for RIRs
-DIM = 3  # Room dimension (3 dimensional room)
-ORDER = -1  # Reflection order (-1 is maximal order)
-MTYPE = rir.mtype.omnidirectional  # Microphone type
-NSAMPLE_COEF = 0.8  # Proportion between nsample and maximal (discrete) reverb time
-MAX_REVERB_TIME = 0.4  # Maximal reverb time in project [s]
-NSAMPLE = round(NSAMPLE_COEF * MAX_REVERB_TIME * FS)  # RIR length
-ORIENTATION = (0, 0)  # Microphone orientation
-
-NFFT = 512  # FFT length in STFT
-OVERLAP = 0.75  # Frame overlap in STFT
-HOP_LENGTH = int((1 - OVERLAP) * NFFT)  # Hop length in STFT
-
-TRAIN_REVERB_TIMES = (0.2, 0.3, 0.4)  # Training reverb times (T60) [s]
-TRAIN_RAD_MEAN = 1.5  # Training mean speaker radius [m]
-TRAIN_RAD_VAR = 0.3  # Training variance in speaker radius [m^2]
-TRAIN_SIR_LOW = -2  # Lowest possible training signal-to-interference ratio [dB]
-TRAIN_SIR_HIGH = 2  # Highest possible training signal-to-interference ratio [dB]
-TEST_REVERB_TIMES = (0.16, 0.36)
-
-TEST_RADII = (1.0, 2.0)  # Allowed radii for test set
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 TIMIT_RIR_PATH = 'timit_rir'
-
-
 
 def load_source_signals(source_dir='source_signals/LibriSpeech/dev-clean', batch_size=64, normalize=True):
     """
@@ -94,12 +59,12 @@ def load_source_signals(source_dir='source_signals/LibriSpeech/dev-clean', batch
             waveform, sample_rate = torchaudio.load(
                 os.path.join(speaker_dir, text_folders[text_folder], audio_files[audio_file]))
 
-            # If waveform is too long, select a random segment of 10 seconds
+            # If waveform is too long, select a random segment of SIGNAL_LEN samples
             if waveform.size(1) > SIGNAL_LEN:
                 start_idx = torch.randint(waveform.size(1) - SIGNAL_LEN + 1, (1,)).item()
                 waveform = waveform[:, start_idx:start_idx + SIGNAL_LEN]
 
-            # If waveform is too short, pad to 10 seconds
+            # If waveform is too short, pad to SIGNAL_LEN samples
             elif waveform.size(1) < SIGNAL_LEN:
                 padding = torch.zeros(1, SIGNAL_LEN - waveform.size(1))
                 waveform = torch.cat((waveform, padding), dim=1)
@@ -313,7 +278,7 @@ def calculate_rtf(mic_signals, discard_dc=True):
     # Get magnitude tensor of the reference microphone
     # ref_stft = ref_mic.squeeze(axis=-1).abs() # XXX: old
     ref_stft = ref_mic.squeeze(axis=-1)
-    
+    print(rtf.shape)
     return rtf, ref_stft
 
 
@@ -474,7 +439,7 @@ def generate_coords_rirs_test(num_scenarios: int, allowed_radii: Tuple[float], r
 
 
 def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSpeech/dev-clean',
-                   normalize=True, discard_dc=True):
+                   normalize=True, discard_dc=True) -> Dict[str, torch.tensor]:
     """
     Generates a batch for the neural network.
     :param test: If True, generates a batch for test set, otherwise for training set.
@@ -528,12 +493,29 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
 
     # Calculate target
     target = calculate_target(signals=audio_signals, doas=doas, discard_dc=discard_dc)
+    return {'samples': samples, 'ref_stft': ref_stft, 'target': target}
 
-    return samples, ref_stft, target
 
+# class AudioProjDataset(Dataset):
+#     @classmethod
+#     def create_dataset(self, number_of_samples: int = 5, test=False, source_dir='source_signals/LibriSpeech/dev-clean',
+#                      normalize=True, discard_dc=True, output_path='data.pt'):
+#         data = generate_batch(batch_size=number_of_samples, test=test, source_dir=source_dir, normalize=normalize, discard_dc=discard_dc)
+#         with open(output_path, 'wb') as f:
+#             torch.save(data, f)
 
-# res = torch.stack([generate_batch(batch_size=64) for _ in range(10)])
-# with open('train_data.pt', 'wb') as f:
-    # torch.save(res, f)
+#     def __init__(self, dataset_path: str = 'data.pt'):
+#         super().__init__()
+#         with open(dataset_path, 'rb') as f:
+#             self.batches = torch.load(f)    
+
+#     def __len__(self):
+#         return self.batches['samples'].size(0)
+    
+#     def __getitem__(self, index) -> Tuple:
+#         return super().__getitem__(index)
+
 # generate_batch(batch_size=5)
-generate_batch(batch_size=5, test=True)
+data = generate_batch(batch_size=5)
+with open('data.pt', 'wb') as f:
+    torch.save(data, f)
