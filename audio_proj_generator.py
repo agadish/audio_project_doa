@@ -262,24 +262,39 @@ def calculate_rtf(mic_signals, discard_dc=True):
     # If discard_dc is True, discard DC component
     if discard_dc:
         ref_mic = ref_mic[:, :, 1:, :]
-    ref_mic = ref_mic.permute(0, 3, 2, 1)
+    # ref_mic = ref_mic.permute(0, 3, 2, 1)
     non_ref_mics = spectrogram(mic_signals[:, 1:].reshape(-1, mic_signals.shape[2]))[:, 1:, :]
     non_ref_mics = non_ref_mics.reshape(mic_signals.shape[0],
-                                        non_ref_mics.shape[2],
+                                        NUM_MICS - 1,
                                         non_ref_mics.shape[1],
-                                        NUM_MICS - 1)
+                                        non_ref_mics.shape[2])
 
     # Compute RTFs via division
     rtf = non_ref_mics / (ref_mic + EPS)
 
     # Complex values -> real and imaginary parts
-    rtf = torch.cat((torch.real(rtf), torch.imag(rtf)), dim=-1)
+    rtf = torch.cat((torch.real(rtf), torch.imag(rtf)), dim=1)
 
     # Get magnitude tensor of the reference microphone
     # ref_stft = ref_mic.squeeze(axis=-1).abs() # XXX: old
-    ref_stft = ref_mic.squeeze(axis=-1)
-    print(rtf.shape)
-    return rtf, ref_stft
+    # rtf_orig_shape = rtf.shape
+    # reshaped_input = rtf.view(-1, rtf.size(3))
+    # conv1d_avg = torch.nn.Conv1d(in_channels=rtf.size(3), out_channels=rtf.size(3), kernel_size=3, padding=1, bias=False)
+    # kernel = torch.tensor([1/3, 1/3, 1/3], dtype=torch.float32).view(1, 1, -1)
+    # rtf_avg = conv1d_avg(reshaped_input)
+    # rtf_avg = rtf_avg.unsqueeze(2)  # Add a dimension for the kernel
+    # rtf_avg = torch.nn.functional.conv1d(rtf_avg, kernel, groups=rtf.size(3))
+    # rtf_avg = rtf_avg.view(rtf_orig_shape)
+
+    # Average each TF with the previous and next TF
+    rtf_avg = rtf
+    rtf_avg[:, :, :, 1:] += rtf[:, :, :, :-1]
+    rtf_avg[:, :, :, :-1] += rtf[:, :, :, 1:]
+    rtf_avg /= 3
+
+    ref_stft = ref_mic.squeeze(axis=1)
+    print(rtf_avg.shape)
+    return rtf_avg, ref_stft
 
 
 def calculate_target(signals, doas, discard_dc):
@@ -302,11 +317,11 @@ def calculate_target(signals, doas, discard_dc):
 
     # Compute STFTs of all clean signals
     # Shape: (NUM_SCENARIOS, 2, NUM_TIME_FRAMES, NUM_FREQUENCY_BINS)
-    stfts = spectrogram(signals).permute(0, 1, 3, 2)
+    stfts = spectrogram(signals)#.permute(0, 1, 3, 2)
 
     # If discard_dc is True, discard DC component
     if discard_dc:
-        stfts = stfts[:, :, :, 1:]
+        stfts = stfts[:, :, 1:, :]
 
     # Get dominant speaker in each TF frame
     dominant_speakers = torch.argmax(stfts, dim=1)
@@ -493,6 +508,13 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
 
     # Calculate target
     target = calculate_target(signals=audio_signals, doas=doas, discard_dc=discard_dc)
+    
+    last_dim = min([target.size(2), samples.size(3)])
+    required_last_dim = (last_dim // 16) * 16
+    samples = samples[:, :, :, :required_last_dim]
+    ref_stft = ref_stft[:, :, :required_last_dim]
+    target = target[:, :, :required_last_dim]
+
     return {'samples': samples, 'ref_stft': ref_stft, 'target': target}
 
 
