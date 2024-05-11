@@ -437,12 +437,27 @@ class TimitRIR:
             # Sample equally each reverb - first entry gets the leftover
             nl = n // len(returned_reverbs_values)
             nl_first = nl + n - nl * len(returned_reverbs_values)
-            dfs: List[pd.DataFrame] = [dir_meta_df[dir_meta_df.reverb == returned_reverbs_values[0]].sample(n=nl_first)]
+            first_sub_df = dir_meta_df[dir_meta_df.reverb == returned_reverbs_values[0]]
+
+            # If more than the rows in the DF should be added - add all the rows exactly oince
+            dfs: List[pd.DataFrame] = []
+            while nl_first > len(first_sub_df):
+                dfs.append(first_sub_df)
+                nl_first -= len(first_sub_df)
+            current_df = first_sub_df.sample(n=nl_first)
+
+            dfs.append(current_df)
             for reverb in returned_reverbs_values[1:]:
-                current_df = dir_meta_df[dir_meta_df['reverb'] == reverb].sample(n=nl)
+                sub_df = dir_meta_df[dir_meta_df['reverb'] == reverb]
+                remaining_length = nl
+                while remaining_length > len(sub_df):
+                    dfs.append(sub_df)
+                    remaining_length -= len(sub_df)
+                current_df = sub_df.sample(n=remaining_length)
                 dfs.append(current_df)
 
             df = pd.concat(dfs, ignore_index=True)
+            df = df.sample(frac=1, ignore_index=True)
         else:
             df = dir_meta_df.sample(n=n)
 
@@ -469,25 +484,21 @@ def generate_coords_rirs_test(num_scenarios: int, allowed_radii: Tuple[float], r
     # Generate random angles
     timit_rir_gen = TimitRIR(base_dir=TIMIT_RIR_PATH)
     df = timit_rir_gen.sample(num_scenarios * 2, allowed_radii=allowed_radii, returned_reverbs_values=returned_reverbs_values)
-    print(num_scenarios)
-    print(f"num scenarios: {num_scenarios}")
-    print(f"num scenarios: {num_scenarios}")
-    print(f"num scenarios: {num_scenarios}")
     angles = torch.tensor(df.angle.values, device=device)
-    angles = angles.view(num_scenarios, 2)
+    angles = angles.view(-1, 2)
 
     # Convert angles to radians
     angles_rad = angles.float() * (torch.pi / 180.0)
 
     # Perturb radius with Gaussian noise
-    radii_perturbed = torch.tensor(df.radius.values, device=device).view(num_scenarios, 2)
+    radii_perturbed = torch.tensor(df.radius.values, device=device).view(-1, 2)
 
     # Calculate x and y coordinates for each sample
     x_coords = radii_perturbed * torch.cos(angles_rad) + MIC_ARRAY_CENTER[0]
     y_coords = radii_perturbed * torch.sin(angles_rad) + MIC_ARRAY_CENTER[1]
 
-    coordinates = (torch.stack((x_coords, y_coords), dim=-1))
-    rirs = torch.stack(df.rir.tolist())
+    coordinates = torch.stack((x_coords, y_coords), dim=-1).to(device)
+    rirs = torch.stack(df.rir.tolist()).to(device)
     rirs = rirs.view(num_scenarios, 2, NUM_MICS, -1)
  
     return coordinates, angles, rirs
@@ -593,7 +604,7 @@ def parse_args():
     parser = argparse.ArgumentParser('Data generator for audio project')
     parser.add_argument("--train-batch-size", type=int, default=64, help="Batch size for train batches")
     parser.add_argument("--train-num-batches", type=int, default=16, help="Number of train batches")
-    parser.add_argument("--test-batch-size", type=int, default=60, help="Batch size for test batches")
+    parser.add_argument("--test-batch-size", type=int, default=30, help="Batch size for test batches") # 30x2 = 60
     parser.add_argument("--test-num-batches", type=int, default=1, help="Number of test batches")
     parser.add_argument("-o", "--output-dir", type=str, default='data_batches', help='Output directory for data batches')
     args = parser.parse_args()
@@ -613,20 +624,35 @@ def main():
     # 2. Create train batches
     logger.info(f'Creating {args.train_num_batches} train batches')
     if args.train_num_batches:
+        existing_train_batches = 0
         for i in tqdm(range(args.train_num_batches)):
-            data = generate_batch(batch_size=args.train_batch_size)
             output_path = os.path.join(args.output_dir, f'train_{i}.pt')
+            if Path(output_path).exists():
+                logger.debug(f'Skipping {output_path} - already exists')
+                existing_train_batches += 1
+                continue
+            
+            data = generate_batch(batch_size=args.train_batch_size)
             with open(output_path, 'wb') as f:
                 torch.save(data, f)
+
+        logger.info(f"Finished creating {args.train_num_batches} train batches, skipped {existing_train_batches} existing ones")
     
     # 3. Create test batches
-    logger.debug(f'Creating {args.test_num_batches} test batches') 
+    logger.info(f'Creating {args.test_num_batches} test batches') 
     if args.test_num_batches:
+        existing_test_batches = 0
         for i in tqdm(range(args.test_num_batches)):
-            data = generate_batch(batch_size=args.test_batch_size, test=True)
             output_path = os.path.join(args.output_dir, f'test_{i}.pt')
+            if Path(output_path).exists():
+                logger.debug(f'Skipping test {i} - already exists')
+                existing_test_batches += 1
+                continue
+
+            data = generate_batch(batch_size=args.test_batch_size, test=True)
             with open(output_path, 'wb') as f:
                 torch.save(data, f)
+        logger.info(f"Finished creating {args.test_num_batches}  test batches, skipped {existing_test_batches} existing ones")
 
 if __name__ == '__main__':
     exit(main())
