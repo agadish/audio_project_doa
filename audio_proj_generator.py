@@ -1,5 +1,6 @@
 import rir_generator as rir
 import os
+import sys
 import torch
 import torchaudio
 from torchaudio.transforms import Resample, Spectrogram
@@ -36,7 +37,7 @@ def load_source_signals(source_dir='source_signals/LibriSpeech/dev-clean', batch
     # Get list of speaker folders
     speakers = os.listdir(source_dir)
     num_speakers = len(speakers)
-    logger.info(f"Found num_speakers={num_speakers}")
+    logger.debug(f"Found num_speakers={num_speakers}")
 
     # Initialize list to store source signals%
     batch_signals = []
@@ -90,7 +91,7 @@ def load_source_signals(source_dir='source_signals/LibriSpeech/dev-clean', batch
         # Stack signals for each speaker along the second dimension
         batch_signals.append(torch.stack(speaker_signals))
 
-    logger.info(f"Average wav len: {total_wav_len / (batch_size * 2):.2g} [sec]")
+    logger.debug(f"Average wav len: {total_wav_len / (batch_size * 2):.2g} [sec]")
     # Stack signals for each sample along the first dimension
     batch_signals = torch.stack(batch_signals).squeeze(dim=2)
 
@@ -210,7 +211,7 @@ def generate_rir_batch(source_positions, reverb_times):
         # for future in futures:
             # _ = future.result()
 
-        logger.info(f"Enqueued rir workers, gathering result...")
+        logger.debug(f"Enqueued rir workers, gathering result...")
         for i, future in enumerate(futures):
             r, c = indices_order[i]
             rirs[r, c] = future.result()
@@ -507,35 +508,35 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
                 Shape: (NUM_SCENARIOS, NUM_TIME_FRAMES, NUM_FREQUENCY_BINS)
     """
     # Load random pairs of audio signals
-    logger.info('Loading source signals...')
+    logger.debug('Loading source signals...')
     audio_signals = load_source_signals(source_dir=source_dir, normalize=normalize, batch_size=batch_size).to(device)
 
     # If training batch, generate scenarios
     if not test:
         # Generate (x, y) positions for speakers
-        logger.info('Batch type is training')
-        logger.info('Generating coords...')
+        logger.debug('Batch type is training')
+        logger.debug('Generating coords...')
         source_positions, doas = generate_coords(num_scenarios=batch_size,
                                                  radii=torch.tensor(TRAIN_RAD_MEAN, device=device), variance=TRAIN_RAD_VAR)
 
         # Generate RIRs
-        logger.info('Generating rir...')
+        logger.debug('Generating rir...')
         rirs = generate_rir_batch(source_positions=source_positions, reverb_times=TRAIN_REVERB_TIMES)
 
         # Convolve speaker signals with RIRs
-        logger.info('Conv rirs...')
+        logger.debug('Conv rirs...')
         perceived_signals = conv_rirs(scenario_signals=audio_signals, rirs=rirs)
 
         # Mix pairs with interference
-        logger.info('Mixing rirs...')
+        logger.debug('Mixing rirs...')
         mixed_signals = mix_rirs(perceived_signals=perceived_signals, interfere=True)
 
     # If test batch, use scenarios given in the real RIRs
     else:
         # Generate (x, y) positions for speakers
         # DONE: expand generate_coords to return radii too, or use something else
-        logger.info('Batch type is test')
-        logger.info('Generating coords...')
+        logger.debug('Batch type is test')
+        logger.debug('Generating coords...')
         source_positions, doas, rirs = generate_coords_rirs_test(num_scenarios=batch_size,
                                                                  allowed_radii=TEST_RADII,
                                                                  returned_reverbs_values=TEST_REVERB_TIMES)
@@ -545,22 +546,22 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
         # DONE: note that finally the angles should be in range [0, 180]
 
         # Convolve speaker signals with RIRs
-        logger.info('Conv rirs...')
+        logger.debug('Conv rirs...')
         perceived_signals = conv_rirs(scenario_signals=audio_signals, rirs=rirs)
 
         # Mix pairs with no interference
-        logger.info('Mixing rirs...')
+        logger.debug('Mixing rirs...')
         mixed_signals = mix_rirs(perceived_signals=perceived_signals, interfere=False)
 
     # Calculate RTFs and reference microphone magnitude tensor
-    logger.info('Calculatign RTF...')
+    logger.debug('Calculatign RTF...')
     samples, ref_stft = calculate_rtf(mixed_signals, discard_dc=discard_dc)
 
     # Calculate target
-    logger.info('Calculatign target...')
+    logger.debug('Calculatign target...')
     target = calculate_target(signals=audio_signals, doas=doas, discard_dc=discard_dc)
     
-    logger.info('Aligning all data to 16...')
+    logger.debug('Aligning all data to 16...')
     last_dim = min([target.size(2), samples.size(3)])
     required_last_dim = (last_dim // 16) * 16
     samples = samples[:, :, :, :required_last_dim]
@@ -598,7 +599,12 @@ def parse_args():
     args = parser.parse_args()
     return args
 
+def init_logger():
+    logger.remove()
+    logger.add(sys.stdout, level='INFO')
+
 def main():
+    init_logger()
     args = parse_args()
     
     # 1. Create output directory
@@ -614,7 +620,7 @@ def main():
                 torch.save(data, f)
     
     # 3. Create test batches
-    logger.info(f'Creating {args.test_num_batches} test batches') 
+    logger.debug(f'Creating {args.test_num_batches} test batches') 
     if args.test_num_batches:
         for i in tqdm(range(args.test_num_batches)):
             data = generate_batch(batch_size=args.test_batch_size, test=True)
