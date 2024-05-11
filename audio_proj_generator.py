@@ -11,7 +11,10 @@ import scipy
 from dataclasses import dataclass
 from functools import cached_property
 from loguru import logger
+from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
+from tqdm import tqdm
+import argparse
 
 
 from config import ANGLE_HIGH, ANGLE_LOW, ANGLE_RES, C, DIM, ENABLE_HPF, EPS, HOP_LENGTH, MIC_ARRAY_CENTER, MIC_ARRAY_POS, MTYPE, NFFT, NSAMPLE, NUM_MICS, ORDER, ORIENTATION, SIGNAL_LEN, SPEAKER_HEIGHT, TEST_RADII, TEST_REVERB_TIMES, TRAIN_RAD_MEAN, TRAIN_RAD_VAR, TRAIN_REVERB_TIMES, TRAIN_SIR_HIGH, TRAIN_SIR_LOW, FS, L, MAX_WORKERS
@@ -585,9 +588,40 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
     
 #     def __getitem__(self, index) -> Tuple:
 #         return super().__getitem__(index)
+def parse_args():
+    parser = argparse.ArgumentParser('Data generator for audio project')
+    parser.add_argument("--train-batch-size", type=int, default=64, help="Batch size for train batches")
+    parser.add_argument("--train-num-batches", type=int, default=16, help="Number of train batches")
+    parser.add_argument("--test-batch-size", type=int, default=60, help="Batch size for test batches")
+    parser.add_argument("--test-num-batches", type=int, default=1, help="Number of test batches")
+    parser.add_argument("-o", "--output-dir", type=str, default='data_batches', help='Output directory for data batches')
+    args = parser.parse_args()
+    return args
+
+def main():
+    args = parse_args()
+    
+    # 1. Create output directory
+    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+
+    # 2. Create train batches
+    logger.info(f'Creating {args.train_num_batches} train batches')
+    if args.train_num_batches:
+        for i in tqdm(range(args.train_num_batches)):
+            data = generate_batch(batch_size=args.train_batch_size)
+            output_path = os.path.join(args.output_dir, f'train_{i}.pt')
+            with open(output_path, 'wb') as f:
+                torch.save(data, f)
+    
+    # 3. Create test batches
+    logger.info(f'Creating {args.test_num_batches} test batches') 
+    if args.test_num_batches:
+        for i in tqdm(range(args.test_num_batches)):
+            data = generate_batch(batch_size=args.test_batch_size, test=True)
+            output_path = os.path.join(args.output_dir, f'test_{i}.pt')
+            with open(output_path, 'wb') as f:
+                torch.save(data, f)
 
 if __name__ == '__main__':
-    # generate_batch(batch_size=5)
-    data = generate_batch(batch_size=64)
-    with open('data.pt', 'wb') as f:
-        torch.save(data, f)
+    exit(main())
+    
