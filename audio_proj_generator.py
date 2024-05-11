@@ -6,11 +6,15 @@ from torchaudio.transforms import Resample, Spectrogram
 from typing import List, Tuple, Dict
 import pandas as pd
 from torch.utils.data import Dataset
+import numpy as np
 import scipy
 from dataclasses import dataclass
 from functools import cached_property
+from loguru import logger
+from concurrent.futures import ProcessPoolExecutor
 
-from config import ANGLE_HIGH, ANGLE_LOW, ANGLE_RES, C, DIM, ENABLE_HPF, EPS, HOP_LENGTH, MIC_ARRAY_CENTER, MIC_ARRAY_POS, MTYPE, NFFT, NSAMPLE, NUM_MICS, ORDER, ORIENTATION, SIGNAL_LEN, SPEAKER_HEIGHT, TEST_RADII, TEST_REVERB_TIMES, TRAIN_RAD_MEAN, TRAIN_RAD_VAR, TRAIN_REVERB_TIMES, TRAIN_SIR_HIGH, TRAIN_SIR_LOW, FS, L
+
+from config import ANGLE_HIGH, ANGLE_LOW, ANGLE_RES, C, DIM, ENABLE_HPF, EPS, HOP_LENGTH, MIC_ARRAY_CENTER, MIC_ARRAY_POS, MTYPE, NFFT, NSAMPLE, NUM_MICS, ORDER, ORIENTATION, SIGNAL_LEN, SPEAKER_HEIGHT, TEST_RADII, TEST_REVERB_TIMES, TRAIN_RAD_MEAN, TRAIN_RAD_VAR, TRAIN_REVERB_TIMES, TRAIN_SIR_HIGH, TRAIN_SIR_LOW, FS, L, MAX_WORKERS
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -29,16 +33,18 @@ def load_source_signals(source_dir='source_signals/LibriSpeech/dev-clean', batch
     # Get list of speaker folders
     speakers = os.listdir(source_dir)
     num_speakers = len(speakers)
+    logger.info(f"Found num_speakers={num_speakers}")
 
-    # Initialize list to store source signals
+    # Initialize list to store source signals%
     batch_signals = []
 
     # Iterate over batch size
+    total_wav_len = 0.0
     for _ in range(batch_size):
         # Randomly select two different speakers
-        selected_speakers = torch.randint(num_speakers, (2,))
+        selected_speakers = torch.randint(num_speakers, (2,), device=device)
         while selected_speakers[0] == selected_speakers[1]:
-            selected_speakers = torch.randint(num_speakers, (2,))
+            selected_speakers = torch.randint(num_speakers, (2,), device=device)
 
         # Initialize list to store signals for each speaker
         speaker_signals = []
@@ -58,6 +64,8 @@ def load_source_signals(source_dir='source_signals/LibriSpeech/dev-clean', batch
             # Load audio file
             waveform, sample_rate = torchaudio.load(
                 os.path.join(speaker_dir, text_folders[text_folder], audio_files[audio_file]))
+            current_wav_len = waveform.size(1) / sample_rate
+            total_wav_len += current_wav_len
 
             # If waveform is too long, select a random segment of SIGNAL_LEN samples
             if waveform.size(1) > SIGNAL_LEN:
@@ -79,6 +87,7 @@ def load_source_signals(source_dir='source_signals/LibriSpeech/dev-clean', batch
         # Stack signals for each speaker along the second dimension
         batch_signals.append(torch.stack(speaker_signals))
 
+    logger.info(f"Average wav len: {total_wav_len / (batch_size * 2):.2g} [sec]")
     # Stack signals for each sample along the first dimension
     batch_signals = torch.stack(batch_signals).squeeze(dim=2)
 
@@ -108,44 +117,44 @@ def generate_coords(num_scenarios, radii, variance):
 
     # Generate random angles
     angles = torch.randint(ANGLE_LOW, int((ANGLE_HIGH - ANGLE_LOW) / ANGLE_RES) + 1,
-                           size=(num_scenarios, 2)) * ANGLE_RES
+                           size=(num_scenarios, 2), device=device) * ANGLE_RES
 
     # Convert angles to radians
     angles_rad = angles.float() * (torch.pi / 180.0)
 
     # If only one radius given, set it for all samples
     if radii.numel() == 1:
-        radii_tensor = torch.full(size=(num_scenarios,), fill_value=radii.item(), dtype=torch.float32)
+        radii_tensor = torch.full(size=(num_scenarios,), fill_value=radii.item(), dtype=torch.float32).to(device)
     # Else, pick a radius for each sample
     else:
-        radii_tensor = torch.tensor([radii[i % len(radii)] for i in range(num_scenarios)], dtype=torch.float32)
+        radii_tensor = torch.tensor([radii[i % len(radii)] for i in range(num_scenarios)], dtype=torch.float32, device=device)
 
     # Perturb radius with Gaussian noise
-    radii_perturbed = radii_tensor.unsqueeze(1) + torch.randn(num_scenarios, 2) * variance
+    radii_perturbed = radii_tensor.unsqueeze(1) + torch.randn(num_scenarios, 2, device=device) * variance
 
     # Calculate x and y coordinates for each sample
     x_coords = radii_perturbed * torch.cos(angles_rad) + MIC_ARRAY_CENTER[0]
     y_coords = radii_perturbed * torch.sin(angles_rad) + MIC_ARRAY_CENTER[1]
 
-    coordinates = (torch.stack((x_coords, y_coords), dim=-1))
+    coordinates = (torch.stack((x_coords, y_coords), dim=-1)).to(device)
 
     return coordinates, angles
 
 
-def generate_rir(source_position, reverb_time):
+def generate_rir(source_position: torch.tensor, reverb_time: torch.tensor) -> torch.tensor:
     """
     Generates RIRs of all microphones, for a given source position (x, y) and reverb time.
     """
     # Concat speaker height to source position
-    source_position = torch.cat((source_position, torch.tensor((SPEAKER_HEIGHT,))), dim=0)
+    source_position = torch.cat((source_position, torch.tensor((SPEAKER_HEIGHT, ), device=device)), dim=0)
     # Generate RIRs of all microphones
     result_rirs = rir.generate(
         c=C,  # Sound velocity (m/s)
         fs=FS,  # Sample frequency (samples/s)
         r=MIC_ARRAY_POS,  # Receiver position(s) [x y z] (m)
-        s=source_position,  # Source position [x y z] (m)
+        s=source_position.cpu().numpy(),  # Source position [x y z] (m)
         L=L,  # Room dimensions [x y z] (m)
-        reverberation_time=reverb_time,  # Reverberation time (s)
+        reverberation_time=reverb_time.cpu().numpy(),  # Reverberation time (s)
         nsample=NSAMPLE,  # Number of output samples
         mtype=MTYPE,  # Microphone type
         order=ORDER,  # Reflection order
@@ -154,7 +163,7 @@ def generate_rir(source_position, reverb_time):
         hp_filter=ENABLE_HPF  # High-pass filter
     ).transpose()
 
-    return torch.tensor(result_rirs)
+    return torch.tensor(result_rirs, device=device)
 
 
 def generate_rir_batch(source_positions, reverb_times):
@@ -165,17 +174,44 @@ def generate_rir_batch(source_positions, reverb_times):
     :return: Tensor of size (num_scenarios, 2, NUM_MICS, NSAMPLE)
     """
     num_scenarios = source_positions.shape[0]
-    reverb_times = torch.tensor(reverb_times)
+    reverb_times = torch.tensor(reverb_times, device=device)
 
     # Create tensor of output shape
-    rirs = torch.zeros((num_scenarios, 2, NUM_MICS, NSAMPLE))
+    rirs = torch.zeros((num_scenarios, 2, NUM_MICS, NSAMPLE), device=device)
+
+    # Choose speakers indices
+    # for scenario_idx in range(num_scenarios):
+        # reverb_idx = torch.randint(0, len(reverb_times), (1,)).item()
 
     # For each scenario, generate RIRs
-    for scenario_idx in range(num_scenarios):
-        reverb_idx = torch.randint(0, len(reverb_times), (1,)).item()
-        for speaker_idx in range(2):
-            rirs[scenario_idx, speaker_idx] = generate_rir(
-                source_positions[scenario_idx, speaker_idx], reverb_times[reverb_idx])
+    # with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        # futures = [executor.submit()]
+    # for scenario_idx in range(num_scenarios):
+    #     reverb_idx = torch.randint(0, len(reverb_times), (1,)).item()
+    #     for speaker_idx in range(2):
+    #         rirs[scenario_idx, speaker_idx] = generate_rir(
+    #             source_positions[scenario_idx, speaker_idx], reverb_times[reverb_idx])
+            
+    with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = []
+        indices_order = []
+        for scenario_idx in range(num_scenarios):
+            reverb_idx = torch.randint(0, len(reverb_times), (1,)).item()
+            for speaker_idx in range(2):
+                future = executor.submit(generate_rir,
+                                         source_positions[scenario_idx, speaker_idx],
+                                         reverb_times[reverb_idx])
+                futures.append(future)
+                indices_order.append((scenario_idx, speaker_idx))
+        
+        # for future in futures:
+            # _ = future.result()
+
+        logger.info(f"Enqueued rir workers, gathering result...")
+        for i, future in enumerate(futures):
+            r, c = indices_order[i]
+            rirs[r, c] = future.result()
+
 
     return rirs
 
@@ -195,7 +231,7 @@ def conv_rirs(scenario_signals, rirs):
     rirs_reshaped = rirs.view(num_scenarios * 2, NUM_MICS, -1)
 
     # Create FFTConvolve instance
-    fft_convolve = torchaudio.transforms.FFTConvolve(mode='full')
+    fft_convolve = torchaudio.transforms.FFTConvolve(mode='full').to(device)
 
     # Perform convolution
     conv_result = fft_convolve(signals_reshaped, rirs_reshaped)
@@ -220,7 +256,7 @@ def mix_rirs(perceived_signals, interfere=True):
     # Generate random SIRs if interference is required
     if interfere:
         # Generate random SIRs for each scenario and mic within the specified range
-        sirs = torch.rand(num_scenarios, NUM_MICS) * (TRAIN_SIR_HIGH - TRAIN_SIR_LOW) + TRAIN_SIR_LOW
+        sirs = torch.rand(num_scenarios, NUM_MICS, device=device) * (TRAIN_SIR_HIGH - TRAIN_SIR_LOW) + TRAIN_SIR_LOW
 
         # Ensure that SIRs are in the correct range and convert to linear scale
         sirs = torch.pow(10, sirs.float() / 10)
@@ -255,7 +291,7 @@ def calculate_rtf(mic_signals, discard_dc=True):
         win_length=NFFT,
         hop_length=HOP_LENGTH,
         power=None  # Complex spectrum
-    )
+    ).to(device)
 
     # Compute STFTs - first microphone is used as reference
     ref_mic = spectrogram(mic_signals[:, 0]).unsqueeze(dim=1)
@@ -312,12 +348,12 @@ def calculate_target(signals, doas, discard_dc):
         n_fft=NFFT,
         win_length=NFFT,
         hop_length=HOP_LENGTH,
-        power=1  # Magnitude
-    )
+        power=1  # Magnitude,
+    ).to(device)
 
     # Compute STFTs of all clean signals
     # Shape: (NUM_SCENARIOS, 2, NUM_TIME_FRAMES, NUM_FREQUENCY_BINS)
-    stfts = spectrogram(signals)#.permute(0, 1, 3, 2)
+    stfts = spectrogram(signals.to(device)) #.permute(0, 1, 3, 2)
 
     # If discard_dc is True, discard DC component
     if discard_dc:
@@ -433,14 +469,14 @@ def generate_coords_rirs_test(num_scenarios: int, allowed_radii: Tuple[float], r
     print(f"num scenarios: {num_scenarios}")
     print(f"num scenarios: {num_scenarios}")
     print(f"num scenarios: {num_scenarios}")
-    angles = torch.tensor(df.angle.values)
+    angles = torch.tensor(df.angle.values, device=device)
     angles = angles.view(num_scenarios, 2)
 
     # Convert angles to radians
     angles_rad = angles.float() * (torch.pi / 180.0)
 
     # Perturb radius with Gaussian noise
-    radii_perturbed = torch.tensor(df.radius.values).view(num_scenarios, 2)
+    radii_perturbed = torch.tensor(df.radius.values, device=device).view(num_scenarios, 2)
 
     # Calculate x and y coordinates for each sample
     x_coords = radii_perturbed * torch.cos(angles_rad) + MIC_ARRAY_CENTER[0]
@@ -468,27 +504,35 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
                 Shape: (NUM_SCENARIOS, NUM_TIME_FRAMES, NUM_FREQUENCY_BINS)
     """
     # Load random pairs of audio signals
-    audio_signals = load_source_signals(source_dir=source_dir, normalize=normalize, batch_size=batch_size)
+    logger.info('Loading source signals...')
+    audio_signals = load_source_signals(source_dir=source_dir, normalize=normalize, batch_size=batch_size).to(device)
 
     # If training batch, generate scenarios
     if not test:
         # Generate (x, y) positions for speakers
+        logger.info('Batch type is training')
+        logger.info('Generating coords...')
         source_positions, doas = generate_coords(num_scenarios=batch_size,
-                                                 radii=torch.tensor(TRAIN_RAD_MEAN), variance=TRAIN_RAD_VAR)
+                                                 radii=torch.tensor(TRAIN_RAD_MEAN, device=device), variance=TRAIN_RAD_VAR)
 
         # Generate RIRs
+        logger.info('Generating rir...')
         rirs = generate_rir_batch(source_positions=source_positions, reverb_times=TRAIN_REVERB_TIMES)
 
         # Convolve speaker signals with RIRs
+        logger.info('Conv rirs...')
         perceived_signals = conv_rirs(scenario_signals=audio_signals, rirs=rirs)
 
         # Mix pairs with interference
+        logger.info('Mixing rirs...')
         mixed_signals = mix_rirs(perceived_signals=perceived_signals, interfere=True)
 
     # If test batch, use scenarios given in the real RIRs
     else:
         # Generate (x, y) positions for speakers
         # DONE: expand generate_coords to return radii too, or use something else
+        logger.info('Batch type is test')
+        logger.info('Generating coords...')
         source_positions, doas, rirs = generate_coords_rirs_test(num_scenarios=batch_size,
                                                                  allowed_radii=TEST_RADII,
                                                                  returned_reverbs_values=TEST_REVERB_TIMES)
@@ -498,17 +542,22 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
         # DONE: note that finally the angles should be in range [0, 180]
 
         # Convolve speaker signals with RIRs
+        logger.info('Conv rirs...')
         perceived_signals = conv_rirs(scenario_signals=audio_signals, rirs=rirs)
 
         # Mix pairs with no interference
+        logger.info('Mixing rirs...')
         mixed_signals = mix_rirs(perceived_signals=perceived_signals, interfere=False)
 
     # Calculate RTFs and reference microphone magnitude tensor
+    logger.info('Calculatign RTF...')
     samples, ref_stft = calculate_rtf(mixed_signals, discard_dc=discard_dc)
 
     # Calculate target
+    logger.info('Calculatign target...')
     target = calculate_target(signals=audio_signals, doas=doas, discard_dc=discard_dc)
     
+    logger.info('Aligning all data to 16...')
     last_dim = min([target.size(2), samples.size(3)])
     required_last_dim = (last_dim // 16) * 16
     samples = samples[:, :, :, :required_last_dim]
@@ -537,7 +586,8 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
 #     def __getitem__(self, index) -> Tuple:
 #         return super().__getitem__(index)
 
-# generate_batch(batch_size=5)
-data = generate_batch(batch_size=5)
-with open('data.pt', 'wb') as f:
-    torch.save(data, f)
+if __name__ == '__main__':
+    # generate_batch(batch_size=5)
+    data = generate_batch(batch_size=64)
+    with open('data.pt', 'wb') as f:
+        torch.save(data, f)
