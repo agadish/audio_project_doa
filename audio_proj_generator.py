@@ -12,6 +12,7 @@ import scipy
 from dataclasses import dataclass
 from functools import cached_property
 from loguru import logger
+from copy import deepcopy
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
 from tqdm import tqdm
@@ -195,26 +196,28 @@ def generate_rir_batch(source_positions, reverb_times):
     #     for speaker_idx in range(2):
     #         rirs[scenario_idx, speaker_idx] = generate_rir(
     #             source_positions[scenario_idx, speaker_idx], reverb_times[reverb_idx])
+    
+    with tqdm(total=num_scenarios * 2, desc='Generating Room Impulse Response') as progress_bar:
+        with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = []
+            indices_order = []
+            for scenario_idx in range(num_scenarios):
+                reverb_idx = torch.randint(0, len(reverb_times), (1,)).item()
+                for speaker_idx in range(2):
+                    future = executor.submit(generate_rir,
+                                            source_positions[scenario_idx, speaker_idx],
+                                            reverb_times[reverb_idx])
+                    futures.append(future)
+                    indices_order.append((scenario_idx, speaker_idx))
             
-    with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = []
-        indices_order = []
-        for scenario_idx in range(num_scenarios):
-            reverb_idx = torch.randint(0, len(reverb_times), (1,)).item()
-            for speaker_idx in range(2):
-                future = executor.submit(generate_rir,
-                                         source_positions[scenario_idx, speaker_idx],
-                                         reverb_times[reverb_idx])
-                futures.append(future)
-                indices_order.append((scenario_idx, speaker_idx))
-        
-        # for future in futures:
-            # _ = future.result()
+            # for future in futures:
+                # _ = future.result()
 
-        logger.debug(f"Enqueued rir workers, gathering result...")
-        for i, future in enumerate(futures):
-            r, c = indices_order[i]
-            rirs[r, c] = future.result()
+            logger.debug(f"Enqueued rir workers, gathering result...")
+            for i, future in enumerate(futures):
+                r, c = indices_order[i]
+                rirs[r, c] = future.result()
+                progress_bar.update(1)
 
 
     return rirs
@@ -309,8 +312,18 @@ def calculate_rtf(mic_signals, discard_dc=True):
                                         non_ref_mics.shape[1],
                                         non_ref_mics.shape[2])
 
+    # Average each TF with the previous and next TF
+    avg_ref_mic = deepcopy(ref_mic)
+    avg_ref_mic[:, :, :, 1:] += avg_ref_mic[:, :, :, :-1]
+    avg_ref_mic[:, :, :, :-1] += avg_ref_mic[:, :, :, 1:]
+    avg_ref_mic /= 3
+
+    non_ref_mics[:, :, :, 1:] += non_ref_mics[:, :, :, :-1]
+    non_ref_mics[:, :, :, :-1] += non_ref_mics[:, :, :, 1:]
+    non_ref_mics /= 3
+
     # Compute RTFs via division
-    rtf = non_ref_mics / (ref_mic + EPS)
+    rtf = non_ref_mics / (avg_ref_mic + EPS)
 
     # Complex values -> real and imaginary parts
     rtf = torch.cat((torch.real(rtf), torch.imag(rtf)), dim=1)
@@ -326,15 +339,8 @@ def calculate_rtf(mic_signals, discard_dc=True):
     # rtf_avg = torch.nn.functional.conv1d(rtf_avg, kernel, groups=rtf.size(3))
     # rtf_avg = rtf_avg.view(rtf_orig_shape)
 
-    # Average each TF with the previous and next TF
-    rtf_avg = rtf
-    rtf_avg[:, :, :, 1:] += rtf[:, :, :, :-1]
-    rtf_avg[:, :, :, :-1] += rtf[:, :, :, 1:]
-    rtf_avg /= 3
-
     ref_stft = ref_mic.squeeze(axis=1)
-    print(rtf_avg.shape)
-    return rtf_avg, ref_stft
+    return rtf, ref_stft
 
 
 def calculate_target(signals, doas, discard_dc):
@@ -581,25 +587,6 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
 
     return {'samples': samples, 'ref_stft': ref_stft, 'target': target}
 
-
-# class AudioProjDataset(Dataset):
-#     @classmethod
-#     def create_dataset(self, number_of_samples: int = 5, test=False, source_dir='source_signals/LibriSpeech/dev-clean',
-#                      normalize=True, discard_dc=True, output_path='data.pt'):
-#         data = generate_batch(batch_size=number_of_samples, test=test, source_dir=source_dir, normalize=normalize, discard_dc=discard_dc)
-#         with open(output_path, 'wb') as f:
-#             torch.save(data, f)
-
-#     def __init__(self, dataset_path: str = 'data.pt'):
-#         super().__init__()
-#         with open(dataset_path, 'rb') as f:
-#             self.batches = torch.load(f)    
-
-#     def __len__(self):
-#         return self.batches['samples'].size(0)
-    
-#     def __getitem__(self, index) -> Tuple:
-#         return super().__getitem__(index)
 def parse_args():
     parser = argparse.ArgumentParser('Data generator for audio project')
     parser.add_argument("--train-batch-size", type=int, default=64, help="Batch size for train batches")
@@ -607,6 +594,7 @@ def parse_args():
     parser.add_argument("--test-batch-size", type=int, default=30, help="Batch size for test batches") # 30x2 = 60
     parser.add_argument("--test-num-batches", type=int, default=1, help="Number of test batches")
     parser.add_argument("-o", "--output-dir", type=str, default='data_batches', help='Output directory for data batches')
+    parser.add_argument("-f", "--force-rewrite", type=bool, default=False, help='Overwrite existing data')
     args = parser.parse_args()
     return args
 
@@ -627,7 +615,7 @@ def main():
         existing_train_batches = 0
         for i in tqdm(range(args.train_num_batches)):
             output_path = os.path.join(args.output_dir, f'train_{i}.pt')
-            if Path(output_path).exists():
+            if not args.force_rewrite and Path(output_path).exists():
                 logger.debug(f'Skipping {output_path} - already exists')
                 existing_train_batches += 1
                 continue
@@ -644,7 +632,7 @@ def main():
         existing_test_batches = 0
         for i in tqdm(range(args.test_num_batches)):
             output_path = os.path.join(args.output_dir, f'test_{i}.pt')
-            if Path(output_path).exists():
+            if not args.force_rewrite and Path(output_path).exists():
                 logger.debug(f'Skipping test {i} - already exists')
                 existing_test_batches += 1
                 continue

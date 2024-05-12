@@ -65,30 +65,54 @@ class UnetDAC(nn.Module):
         # Output layer
         self.outconv = nn.Conv2d(16, num_classes, kernel_size=1)
 
-    def forward(self, x):
+        nn.init.xavier_uniform_(self.e11.weight)  
+        nn.init.xavier_uniform_(self.e12.weight)  
+        nn.init.xavier_uniform_(self.e21.weight)  
+        nn.init.xavier_uniform_(self.e22.weight)  
+        nn.init.xavier_uniform_(self.e31.weight)  
+        nn.init.xavier_uniform_(self.e32.weight)  
+        nn.init.xavier_uniform_(self.e41.weight)  
+        nn.init.xavier_uniform_(self.e42.weight)  
+        nn.init.xavier_uniform_(self.e51.weight)  
+        nn.init.xavier_uniform_(self.e52.weight)  
+        nn.init.xavier_uniform_(self.d11.weight)  
+        nn.init.xavier_uniform_(self.d12.weight)  
+        nn.init.xavier_uniform_(self.d21.weight)  
+        nn.init.xavier_uniform_(self.d22.weight)  
+        nn.init.xavier_uniform_(self.d31.weight)  
+        nn.init.xavier_uniform_(self.d32.weight)  
+        nn.init.xavier_uniform_(self.d41.weight)  
+        nn.init.xavier_uniform_(self.d42.weight)  
+        nn.init.xavier_uniform_(self.outconv.weight)  
+        nn.init.xavier_uniform_(self.upconv1.weight)  
+        nn.init.xavier_uniform_(self.upconv2.weight)  
+        nn.init.xavier_uniform_(self.upconv3.weight)  
+
+
+    def forward(self, data):
         # Encoder
-        xe11 = F.elu(self.dropout(self.e11(x)))
-        xe12 = F.elu(self.dropout(self.e12(xe11)))
-        xp1 = self.pool1(xe12)
+        data = F.elu(self.dropout(self.e11(data)), inplace=True)
+        xe12 = F.elu(self.dropout(self.e12(data)))
+        data = self.pool1(xe12)
 
-        xe21 = F.elu(self.dropout(self.e21(xp1)))
-        xe22 = F.elu(self.dropout(self.e22(xe21)))
-        xp2 = self.pool2(xe22)
+        data = F.elu(self.dropout(self.e21(data)))
+        xe22 = F.elu(self.dropout(self.e22(data)))
+        data = self.pool2(xe22)
 
-        xe31 = F.elu(self.dropout(self.e31(xp2)))
-        xe32 = F.elu(self.dropout(self.e32(xe31)))
-        xp3 = self.pool3(xe32)
+        data = F.elu(self.dropout(self.e31(data)))
+        xe32 = F.elu(self.dropout(self.e32(data)))
+        data = self.pool3(xe32)
 
-        xe41 = F.elu(self.dropout(self.e41(xp3)))
-        xe42 = F.elu(self.dropout(self.e42(xe41)))
-        xp4 = self.pool4(xe42)
+        data = F.elu(self.dropout(self.e41(data)))
+        xe42 = F.elu(self.dropout(self.e42(data)))
+        data = self.pool4(xe42)
 
-        xe51 = F.elu(self.dropout(self.e51(xp4)))
-        xe52 = F.elu(self.dropout(self.e52(xe51)))
+        data = F.elu(self.dropout(self.e51(data)))
+        data = F.elu(self.dropout(self.e52(data)))
         
         # Decoder
-        xu1 = self.upconv1(xe52) # 
-        xu11 = torch.cat([xu1, xe42], dim=1) # XXX: Changed from dim=1 in all places.
+        data = self.upconv1(data) # 
+        data = torch.cat([data, xe42], dim=1) # XXX: Changed from dim=1 in all places.
         """
         xu1.shape
         torch.Size([128, 32, 2])
@@ -99,56 +123,59 @@ class UnetDAC(nn.Module):
         dim=1: torch.Size([128, 64, 2])
         dim=0: torch.Size([256, 32, 2])
         """
-        xd11 = F.elu(self.dropout(self.d11(xu11)))
-        xd12 = F.elu(self.dropout(self.d12(xd11)))
+        data = F.elu(self.dropout(self.d11(data)))
+        data = F.elu(self.dropout(self.d12(data)))
 
-        xu2 = self.upconv2(xd12)
-        xu22 = torch.cat([xu2, xe32], dim=1)
-        xd21 = F.elu(self.dropout(self.d21(xu22)))
-        xd22 = F.elu(self.dropout(self.d22(xd21)))
+        data = self.upconv2(data)
+        data = torch.cat([data, xe32], dim=1)
+        del xe32
+        data = F.elu(self.dropout(self.d21(data)))
+        data = F.elu(self.dropout(self.d22(data)))
 
-        xu3 = self.upconv3(xd22)
-        xu33 = torch.cat([xu3, xe22], dim=1)
-        xd31 = F.elu(self.dropout(self.d31(xu33)))
-        xd32 = F.elu(self.dropout(self.d32(xd31)))
+        data = self.upconv3(data)
+        data = torch.cat([data, xe22], dim=1)
+        del xe22
+        data = F.elu(self.dropout(self.d31(data)))
+        data = F.elu(self.dropout(self.d32(data)))
 
-        xu4 = self.upconv4(xd32)
-        xu44 = torch.cat([xu4, xe12], dim=1)
-        xd41 = F.elu(self.dropout(self.d41(xu44)))
-        xd42 = F.elu(self.dropout(self.d42(xd41)))
+        data = self.upconv4(data)
+        data = torch.cat([data, xe12], dim=1)
+        del xe12
+        data = F.elu(self.dropout(self.d41(data)))
+        data = F.elu(self.dropout(self.d42(data)))
 
         # Output layer
-        out = self.outconv(xd42)
+        data = self.outconv(data)
 
-        softmax_res = F.softmax(out, dim=1) # dim=1 refers to the 13 microphones
+        data = F.softmax(data, dim=1) # dim=1 refers to the 13 microphones
 
-        return softmax_res
+        return data
     
-    def train(self,
-              dataset: torch.utils.data.Dataset,
-              lr: float = 0.001,
-              momentum: float = 0.9,
-              epochs: int = 100,
-              early_stopping: int = 3,
-              mininbatch_size: int = 64):
+    # def train(self,
+    #           dataset: torch.utils.data.Dataset,
+    #           lr: float = 0.001,
+    #           momentum: float = 0.9,
+    #           epochs: int = 100,
+    #           early_stopping: int = 3,
+    #           mininbatch_size: int = 64):
         
-        dataloader = torch.utils.data.DataLoader(dataset, batch_size=mininbatch_size, shuffle=True, num_workers=2)
-        criterion = nn.CrossEntropyLoss()
-        optimizer = torch.optim.Adam(self.parameters(), lr=lr, momentum=momentum)
-        for epoch in range(epochs):
-            for i, minibatch in tqdm(enumerate(dataloader)):
-                raw_audio, directions = minibatch
+    #     dataloader = torch.utils.data.DataLoader(dataset, batch_size=mininbatch_size, shuffle=True, num_workers=2)
+    #     criterion = nn.CrossEntropyLoss()
+    #     optimizer = torch.optim.Adam(self.parameters(), lr=lr, momentum=momentum)
+    #     for epoch in range(epochs):
+    #         for i, minibatch in tqdm(enumerate(dataloader)):
+    #             raw_audio, directions = minibatch
 
-                # Forward + backward + optimize
-                optimizer.zero_grad()
-                outputs = self.forward(raw_audio)
-                loss = criterion(outputs, directions)
-                loss.backward()
-                optimizer.step()
+    #             # Forward + backward + optimize
+    #             optimizer.zero_grad()
+    #             outputs = self.forward(raw_audio)
+    #             loss = criterion(outputs, directions)
+    #             loss.backward()
+    #             optimizer.step()
 
-                # Statistics
-                running_loss += loss.item()
-                if i % 2000 == 1999:    # print every 2000 mini-batches
-                    print(f'[{epoch + 1}, {i + 1:5d}] loss: {running_loss / 2000:.3f}')
-                    running_loss = 0.0
+    #             # Statistics
+    #             running_loss += loss.item()
+    #             if i % 2000 == 1999:    # print every 2000 mini-batches
+    #                 print(f'[{epoch + 1}, {i + 1:5d}] loss: {running_loss / 2000:.3f}')
+    #                 running_loss = 0.0
 

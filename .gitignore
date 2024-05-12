@@ -166,3 +166,7 @@ timit_rir/
 source_signals/
 *.pt
 __pycache__
+events.out.*
+conda-environment.yml
+config.yaml
+wandb*
