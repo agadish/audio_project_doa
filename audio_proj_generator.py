@@ -529,7 +529,7 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
     """
     # Load random pairs of audio signals
     logger.debug('Loading source signals...')
-    audio_signals = load_source_signals(source_dir=source_dir, normalize=normalize, batch_size=batch_size
+    audio_signals = load_source_signals(source_dir=source_dir, normalize=normalize, batch_size=batch_size,
                                         signal_length=signal_length, signal_fs=signal_fs).to(device)
 
     # If training batch, generate scenarios
