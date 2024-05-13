@@ -1,10 +1,12 @@
 import torch
-from typing import List
+import torch.nn.functional as F
+from typing import List, Dict
 import os
+from config import ANGLE_RES, NUM_CLASSES
 
 
-class DistributedTorchDataset(torch.utils.data.Dataset):
-    def __init__(self, dir_path: str, prefix: str, fields: List[str], real_batch_size: int = 64, virtual_batch_size: int = 1):
+class DictTorchPartedDataset(torch.utils.data.Dataset):
+    def __init__(self, dir_path: str, prefix: str, fields: List[str], real_batch_size: int = 64, virtual_batch_size: int = 1, device: str = 'cpu'):
         super().__init__()
         self._dir_path = dir_path
         self._prefix = prefix
@@ -12,6 +14,7 @@ class DistributedTorchDataset(torch.utils.data.Dataset):
         self._virtual_batch_size = virtual_batch_size
         self._real_batch_size = real_batch_size
         self._bs_ratio = real_batch_size // virtual_batch_size
+        self._device = device
         self._init_calc()
 
     def _init_calc(self):
@@ -48,22 +51,18 @@ class DistributedTorchDataset(torch.utils.data.Dataset):
         with open(self._get_idx_path(idx_file), 'rb') as f:
             data = torch.load(f)
 
+        # Process target - NOT NEEDED ANYMORE
+        # self._process_data(data)
+
         if self._virtual_batch_size == 1:
             return [data[field][idx_in] for field in self._fields]
             
-        return [data[field][idx_in * self._virtual_batch_size : (idx_in + 1) * self._virtual_batch_size]
+        return [data[field][idx_in * self._virtual_batch_size : (idx_in + 1) * self._virtual_batch_size].to(self._device)
                 for field in self._fields]
     
-
-class AudioDataLoader(torch.utils.data.DataLoader):
-    def __init__(self, dataset, **kwargs):
-        self.dataset = dataset
-        self.num_batches = len(dataset)
-        super().__init__(self, batch_size=dataset._virtual_batch_size, shuffle=False, **kwargs)
-
-    def __iter__(self):
-        # Ignore self.shuffle
-        batch_indices = torch.arange(len(self.dataset))
-        for batch_idx in batch_indices:
-            # Yield the batch data
-            yield self.dataset[batch_idx]
+    def _process_data(self, data: Dict[str, torch.tensor]):
+        raise ValueError('Dont need it')
+        target = data['target'] // ANGLE_RES
+        target = F.one_hot(target, num_classes=NUM_CLASSES)
+        target = target.permute([0, 3, 1, 2]).float()
+        data['target'] = target

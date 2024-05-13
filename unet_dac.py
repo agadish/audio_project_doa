@@ -3,9 +3,10 @@ import torch.nn as nn
 # from torchvision import models
 import torch.nn.functional as F
 from tqdm import tqdm
+from config import NUM_CLASSES
 
 class UnetDAC(nn.Module):
-    def __init__(self, L: int, K: int, M: int, num_classes: int = (180 // 15) + 1, dropout_probability: float = 0.25):
+    def __init__(self, L: int, K: int, M: int, num_classes: int = NUM_CLASSES, dropout_probability: float = 0.25):
         super().__init__()
         self.L = L
         self.K = K
@@ -91,7 +92,7 @@ class UnetDAC(nn.Module):
 
     def forward(self, data):
         # Encoder
-        data = F.elu(self.dropout(self.e11(data)), inplace=True)
+        data = F.elu(self.dropout(self.e11(data)))
         xe12 = F.elu(self.dropout(self.e12(data)))
         data = self.pool1(xe12)
 

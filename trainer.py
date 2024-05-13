@@ -3,12 +3,13 @@ import os
 import sys
 import tqdm
 import torch
+import bsseval
 
 from torch.utils.data import DataLoader
 from typing import Callable, Any
 from pathlib import Path
 from helpers.train_results import BatchResult, EpochResult, FitResult
-from config import ANGLE_RES
+from config import ANGLE_RES, NFFT, HOP_LENGTH
 
 
 class Trainer(abc.ABC):
@@ -57,7 +58,7 @@ class Trainer(abc.ABC):
         actual_num_epochs = 0
         train_loss, train_acc, test_loss, test_acc = [], [], [], []
 
-        best_acc = None
+        best_loss = None
         epochs_without_improvement = 0
 
         checkpoint_filename = None
@@ -68,9 +69,10 @@ class Trainer(abc.ABC):
                 print(f'*** Loading checkpoint file {checkpoint_filename}')
                 saved_state = torch.load(checkpoint_filename,
                                          map_location=self.device)
-                best_acc = saved_state.get('best_acc', best_acc)
+                best_loss = saved_state.get('best_loss', best_loss)
                 epochs_without_improvement =\
                     saved_state.get('ewi', epochs_without_improvement)
+                print(f"*** best_loss={best_loss:.3g} ewi={epochs_without_improvement}")
                 self.model.load_state_dict(saved_state['model_state'])
 
         for epoch in range(num_epochs):
@@ -88,15 +90,17 @@ class Trainer(abc.ABC):
             # ====== YOUR CODE: ======
             train_result = self.train_epoch(dl_train, **kw)
             my_mean = lambda t: sum(t) / len(t)
-            train_loss.append(my_mean(train_result.losses))
-            train_acc.append(train_result.accuracy)
+            current_train_loss = my_mean(train_result.losses)
+            train_loss.append(current_train_loss)
+            train_acc.append(train_result.accuracy.item())
             test_result = self.test_epoch(dl_test, **kw)
-            test_loss.append(my_mean(test_result.losses))
-            test_acc.append(test_result.accuracy)
+            current_test_loss = my_mean(test_result.losses)
+            test_loss.append(current_test_loss)
+            test_acc.append(test_result.accuracy.item())
 
-            was_improved = best_acc is None or best_acc < test_result.accuracy
+            was_improved = best_loss is None or best_loss >= current_train_loss
             if was_improved:
-                best_acc = test_result.accuracy
+                best_loss = current_train_loss
                 epochs_without_improvement = 0
             else:
                 epochs_without_improvement += 1
@@ -107,8 +111,8 @@ class Trainer(abc.ABC):
             # ========================
 
             # Save model checkpoint if requested
-            if save_checkpoint and checkpoint_filename is not None:
-                saved_state = dict(best_acc=best_acc,
+            if was_improved and save_checkpoint and checkpoint_filename is not None:
+                saved_state = dict(best_loss=best_loss,
                                    ewi=epochs_without_improvement,
                                    model_state=self.model.state_dict())
                 torch.save(saved_state, checkpoint_filename)
@@ -197,8 +201,11 @@ class Trainer(abc.ABC):
 
         pbar_name = forward_fn.__name__
         with tqdm.tqdm(desc=pbar_name, total=num_batches,
-                       file=pbar_file) as pbar:
-            dl_iter = iter(dl)
+                    file=pbar_file) as pbar:
+            try:
+                dl_iter = iter(dl)
+            except Exception as e:
+                print(e)
             for batch_idx in range(num_batches):
                 data = next(dl_iter)
                 batch_res = forward_fn(data)
@@ -212,11 +219,11 @@ class Trainer(abc.ABC):
             avg_loss = sum(losses) / num_batches
             accuracy = 100. * num_correct / num_samples
             pbar.set_description(f'{pbar_name} '
-                                 f'(Avg. Loss {avg_loss:.3f}, '
-                                 f'Accuracy {accuracy:.1f})')
+                                f'(Avg. Loss {avg_loss:.3f})')#, '
+                                # f'Accuracy {accuracy:.1f})')
 
         return EpochResult(losses=losses, accuracy=accuracy)
-
+        
 
 class AudioTrainer(Trainer):
     def __init__(self, model, loss_fn, optimizer, device=None):
@@ -226,40 +233,56 @@ class AudioTrainer(Trainer):
     def train_epoch(self, dl_train: DataLoader, **kw):
         # TODO: Implement modifications to the base method, if needed.
         # ====== YOUR CODE: ======
-        self.hidden = None
         # ========================
         return super().train_epoch(dl_train, **kw)
 
     def test_epoch(self, dl_test: DataLoader, **kw):
         # TODO: Implement modifications to the base method, if needed.
         # ====== YOUR CODE: ======
-        self.hidden = None
         # ========================
         return super().test_epoch(dl_test, **kw)
 
     def train_batch(self, batch) -> BatchResult:
-        samples, ref_stft, target = batch
-        samples = samples.to(self.device, dtype=torch.float)  # (B,S,V)
-        ref_stft = ref_stft.to(self.device)
-        target = target.to(self.device)
-        seq_len = target.size(1)
+        try:
+            samples, ref_stft, target = batch
+            samples = samples.to(self.device, dtype=torch.float)  # (B,S,V)
+            target = target.to(self.device)
+            seq_len = target.size(1)
 
-        # TODO: Train the RNN model on one batch of data.
-        self.optimizer.zero_grad()
-        outputs = self.model(samples)
-        # TODO
-        # output_directions = torch.dot(outputs, ref_stft * ref_stft.T)
-        # output_angle = torch.argmax(output_directions, axis=1)
-        loss = self.loss_fn(outputs, target // ANGLE_RES)
-        loss.backward()
-        self.optimizer.step()
+            # TODO: Train the RNN model on one batch of data.
+            self.optimizer.zero_grad()
+            outputs = self.model(samples)
+            # TODO
+            # output_directions = torch.dot(outputs, ref_stft * ref_stft.T)
+            # output_angle = torch.argmax(output_directions, axis=1)
+            loss = self.loss_fn(outputs, target // ANGLE_RES)
+            loss.backward()
+            self.optimizer.step()
 
-        num_correct = torch.tensor(0) # TODC REF
-        # ========================
+            if False:
+                y_pred_index = torch.argmax(outputs, dim=1)
+                y_target_index = torch.argmax(target, dim=1)
+                num_correct = torch.sum(y_pred_index == y_target_index).float()
+                num_correct /= outputs.numel()
+            else:
+                num_correct = torch.tensor(0)
+                # inverse_spectrogram = torch.istft(ref_stft.squeeze(dim=1),
+                #                        n_fft=NFFT,
+                #                        win_length=NFFT,
+                #                        hop_length=HOP_LENGTH).cpu()
+                
+                # DR, ISR, SIR, SAR = bsseval.evaluate(inverse_spectrogram, outputs.detach().cpu())
 
-        # Note: scaling num_correct by seq_len because each sample has seq_len
-        # different predictions.
-        return BatchResult(loss.item(), num_correct.item() / seq_len)
+                
+            # ========================
+
+            # Note: scaling num_correct by seq_len because each sample has seq_len
+            # different predictions.
+            return BatchResult(loss.item(), num_correct)
+        except Exception as e:
+            print(e)
+            print('what')
+            print(e)
 
     def test_batch(self, batch) -> BatchResult:
         samples, ref_stft, target = batch
@@ -269,12 +292,16 @@ class AudioTrainer(Trainer):
         seq_len = target.size(1)
 
         with torch.no_grad():
-            y_pred, hidden = self.model(samples)
+            outputs = self.model(samples)
             # TODO: ref
-            loss = sum([self.loss_fn(y_pred[:, i, :], target[:, i]) for i in range(seq_len)])
-            y_pred_index = torch.argmax(y_pred, dim=-1)
-            num_correct = torch.sum(y_pred_index == target).float()
-            self.hidden = hidden.detach()
+            loss = self.loss_fn(outputs, target // ANGLE_RES)
+            if False:
+                y_pred_index = torch.argmax(outputs, dim=1)
+                y_target_index = torch.argmax(target, dim=1)
+                num_correct = torch.sum(y_pred_index == y_target_index).float()
+                num_correct /= outputs.numel()
+            else:
+                num_correct = torch.tensor(0)
             # ========================
 
-        return BatchResult(loss.item(), num_correct.item() / seq_len)
+        return BatchResult(loss.item(), num_correct)

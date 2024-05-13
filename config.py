@@ -18,6 +18,7 @@ MIC_ARRAY_CENTER = (3.0, 1.0, 1.5)
 ANGLE_RES = 15  # Circular source setup's angle resolution [deg]
 ANGLE_LOW = 0  # Circular source setup's lowest possible angle [deg]
 ANGLE_HIGH = 180  # Circular source setup's highest possible angle [deg]
+NUM_CLASSES = ((ANGLE_HIGH - ANGLE_LOW) // ANGLE_RES) + 1
 SPEAKER_HEIGHT = torch.tensor(1.75)  # Height of each sound source [m]
 EPS = 1e-9  # Epsilon to avoid 0 values in numerical calculations
 

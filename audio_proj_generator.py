@@ -22,7 +22,7 @@ import argparse
 from config import ANGLE_HIGH, ANGLE_LOW, ANGLE_RES, C, DIM, ENABLE_HPF, EPS, HOP_LENGTH, MIC_ARRAY_CENTER, MIC_ARRAY_POS, MTYPE, NFFT, NSAMPLE, NUM_MICS, ORDER, ORIENTATION, SIGNAL_LEN, SPEAKER_HEIGHT, TEST_RADII, TEST_REVERB_TIMES, TRAIN_RAD_MEAN, TRAIN_RAD_VAR, TRAIN_REVERB_TIMES, TRAIN_SIR_HIGH, TRAIN_SIR_LOW, FS, L, MAX_WORKERS
 
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = "cpu" # torch.device("cuda" if torch.cuda.is_available() else "cpu")
 TIMIT_RIR_PATH = 'timit_rir'
 
 def load_source_signals(source_dir='source_signals/LibriSpeech/dev-clean', batch_size=64, normalize=True):
@@ -303,8 +303,8 @@ def calculate_rtf(mic_signals, discard_dc=True):
     # Compute STFTs - first microphone is used as reference
     ref_mic = spectrogram(mic_signals[:, 0]).unsqueeze(dim=1)
     # If discard_dc is True, discard DC component
-    if discard_dc:
-        ref_mic = ref_mic[:, :, 1:, :]
+    # if discard_dc:
+        # ref_mic = ref_mic[:, :, 1:, :]
     # ref_mic = ref_mic.permute(0, 3, 2, 1)
     non_ref_mics = spectrogram(mic_signals[:, 1:].reshape(-1, mic_signals.shape[2]))[:, 1:, :]
     non_ref_mics = non_ref_mics.reshape(mic_signals.shape[0],
@@ -313,13 +313,14 @@ def calculate_rtf(mic_signals, discard_dc=True):
                                         non_ref_mics.shape[2])
 
     # Average each TF with the previous and next TF
-    avg_ref_mic = deepcopy(ref_mic)
-    avg_ref_mic[:, :, :, 1:] += avg_ref_mic[:, :, :, :-1]
-    avg_ref_mic[:, :, :, :-1] += avg_ref_mic[:, :, :, 1:]
+    avg_ref_mic = deepcopy(ref_mic[:, :, 1:, :])
+    avg_ref_mic[:, :, :, 1:] += ref_mic[:, :, 1:, :-1]
+    avg_ref_mic[:, :, :, :-1] += ref_mic[:, :, 1:, 1:]
     avg_ref_mic /= 3
 
-    non_ref_mics[:, :, :, 1:] += non_ref_mics[:, :, :, :-1]
-    non_ref_mics[:, :, :, :-1] += non_ref_mics[:, :, :, 1:]
+    non_ref_mics_orig = deepcopy(non_ref_mics)
+    non_ref_mics[:, :, :, 1:] += non_ref_mics_orig[:, :, :, :-1]
+    non_ref_mics[:, :, :, :-1] += non_ref_mics_orig[:, :, :, 1:]
     non_ref_mics /= 3
 
     # Compute RTFs via division
@@ -594,13 +595,13 @@ def parse_args():
     parser.add_argument("--test-batch-size", type=int, default=30, help="Batch size for test batches") # 30x2 = 60
     parser.add_argument("--test-num-batches", type=int, default=1, help="Number of test batches")
     parser.add_argument("-o", "--output-dir", type=str, default='data_batches', help='Output directory for data batches')
-    parser.add_argument("-f", "--force-rewrite", type=bool, default=False, help='Overwrite existing data')
+    parser.add_argument("-f", "--force-rewrite", type=bool, default=True, help='Overwrite existing data')
     args = parser.parse_args()
     return args
 
 def init_logger():
     logger.remove()
-    logger.add(sys.stdout, level='INFO')
+    logger.add(sys.stdout, level='DEBUG')
 
 def main():
     init_logger()
@@ -614,7 +615,7 @@ def main():
     if args.train_num_batches:
         existing_train_batches = 0
         for i in tqdm(range(args.train_num_batches)):
-            output_path = os.path.join(args.output_dir, f'train_{i}.pt')
+            output_path = os.path.join(args.output_dir, f'trainv2_{i}.pt')
             if not args.force_rewrite and Path(output_path).exists():
                 logger.debug(f'Skipping {output_path} - already exists')
                 existing_train_batches += 1
@@ -631,7 +632,7 @@ def main():
     if args.test_num_batches:
         existing_test_batches = 0
         for i in tqdm(range(args.test_num_batches)):
-            output_path = os.path.join(args.output_dir, f'test_{i}.pt')
+            output_path = os.path.join(args.output_dir, f'testv2_{i}.pt')
             if not args.force_rewrite and Path(output_path).exists():
                 logger.debug(f'Skipping test {i} - already exists')
                 existing_test_batches += 1
