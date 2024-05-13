@@ -25,7 +25,7 @@ from config import ANGLE_HIGH, ANGLE_LOW, ANGLE_RES, C, DIM, ENABLE_HPF, EPS, HO
 device = "cpu" # torch.device("cuda" if torch.cuda.is_available() else "cpu")
 TIMIT_RIR_PATH = 'timit_rir'
 
-def load_source_signals(source_dir='source_signals/LibriSpeech/dev-clean', batch_size=64, normalize=True):
+def load_source_signals(source_dir='source_signals/LibriSpeech/dev-clean', batch_size=64, normalize=True, signal_length=SIGNAL_LEN, signal_fs=FS):
     """
     Load batch_size random pairs of source signals of different speakers.
     Truncates or pads source signals as needed, to achieve the desired signal length SIGNAL_LEN.
@@ -36,7 +36,8 @@ def load_source_signals(source_dir='source_signals/LibriSpeech/dev-clean', batch
     """
 
     # Get list of speaker folders
-    speakers = os.listdir(source_dir)
+    speakers = [speaker for speaker in os.listdir(source_dir)
+                if os.path.isdir(os.path.join(source_dir, speaker))]
     num_speakers = len(speakers)
     logger.debug(f"Found num_speakers={num_speakers}")
 
@@ -69,22 +70,23 @@ def load_source_signals(source_dir='source_signals/LibriSpeech/dev-clean', batch
             # Load audio file
             waveform, sample_rate = torchaudio.load(
                 os.path.join(speaker_dir, text_folders[text_folder], audio_files[audio_file]))
-            current_wav_len = waveform.size(1) / sample_rate
-            total_wav_len += current_wav_len
+            
+            # Resample if needed
+            if sample_rate != signal_fs:
+                waveform = torchaudio.transforms.Resample(sample_rate, signal_fs)(waveform)
 
             # If waveform is too long, select a random segment of SIGNAL_LEN samples
-            if waveform.size(1) > SIGNAL_LEN:
-                start_idx = torch.randint(waveform.size(1) - SIGNAL_LEN + 1, (1,)).item()
-                waveform = waveform[:, start_idx:start_idx + SIGNAL_LEN]
+            if waveform.size(1) > signal_length:
+                start_idx = torch.randint(waveform.size(1) - signal_length + 1, (1,)).item()
+                waveform = waveform[:, start_idx:start_idx + signal_length]
 
             # If waveform is too short, pad to SIGNAL_LEN samples
-            elif waveform.size(1) < SIGNAL_LEN:
-                padding = torch.zeros(1, SIGNAL_LEN - waveform.size(1))
+            elif waveform.size(1) < signal_length:
+                padding = torch.zeros(1, signal_length - waveform.size(1))
                 waveform = torch.cat((waveform, padding), dim=1)
 
-            # Resample if needed
-            if sample_rate != FS:
-                waveform = torchaudio.transforms.Resample(sample_rate, FS)(waveform)
+            current_wav_len = waveform.size(1) / sample_rate
+            total_wav_len += current_wav_len
 
             # Append waveform to list
             speaker_signals.append(waveform)
@@ -512,7 +514,7 @@ def generate_coords_rirs_test(num_scenarios: int, allowed_radii: Tuple[float], r
 
 
 def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSpeech/dev-clean',
-                   normalize=True, discard_dc=True) -> Dict[str, torch.tensor]:
+                   normalize=True, discard_dc=True, signal_length=SIGNAL_LEN, signal_fs=FS) -> Dict[str, torch.tensor]:
     """
     Generates a batch for the neural network.
     :param test: If True, generates a batch for test set, otherwise for training set.
@@ -527,7 +529,8 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
     """
     # Load random pairs of audio signals
     logger.debug('Loading source signals...')
-    audio_signals = load_source_signals(source_dir=source_dir, normalize=normalize, batch_size=batch_size).to(device)
+    audio_signals = load_source_signals(source_dir=source_dir, normalize=normalize, batch_size=batch_size
+                                        signal_length=signal_length, signal_fs=signal_fs).to(device)
 
     # If training batch, generate scenarios
     if not test:
@@ -586,16 +589,27 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
     ref_stft = ref_stft[:, :, :required_last_dim]
     target = target[:, :, :required_last_dim]
 
-    return {'samples': samples, 'ref_stft': ref_stft, 'target': target}
+    results = {'samples': x.cpu().detach(),
+               'ref_stft': ref_stft.cpu().detach(),
+               'target': target.cpu().detach(),
+               'perceived_signals': perceived_signals[:, :, 0].cpu().detach(),
+               'doas': doas.cpu()}
+               
+    return results
 
 def parse_args():
     parser = argparse.ArgumentParser('Data generator for audio project')
     parser.add_argument("--train-batch-size", type=int, default=64, help="Batch size for train batches")
-    parser.add_argument("--train-num-batches", type=int, default=16, help="Number of train batches")
+    parser.add_argument("--train-num-batches", type=int, default=94, help="Number of train batches")
     parser.add_argument("--test-batch-size", type=int, default=30, help="Batch size for test batches") # 30x2 = 60
     parser.add_argument("--test-num-batches", type=int, default=1, help="Number of test batches")
     parser.add_argument("-o", "--output-dir", type=str, default='data_batches', help='Output directory for data batches')
     parser.add_argument("-f", "--force-rewrite", type=bool, default=True, help='Overwrite existing data')
+    parser.add_argument("--input-train", type=str, default='source_signals/LibriSpeech/train-clean-100', help='Data directory or train')
+    parser.add_argument("--input-test", type=str, default='source_signals/LibriSpeech/test-other', help='Data directory of test')
+    parser.add_argument("--signal-length-train", type=int, default=FS*0.76, help='Signal length on train')
+    parser.add_argument("--signal-length-test", type=int, default=FS*10, help='Signal length on test')
+    
     args = parser.parse_args()
     return args
 
@@ -615,13 +629,13 @@ def main():
     if args.train_num_batches:
         existing_train_batches = 0
         for i in tqdm(range(args.train_num_batches)):
-            output_path = os.path.join(args.output_dir, f'trainv2_{i}.pt')
+            output_path = os.path.join(args.output_dir, f'train1.2_{i}.pt')
             if not args.force_rewrite and Path(output_path).exists():
                 logger.debug(f'Skipping {output_path} - already exists')
                 existing_train_batches += 1
                 continue
             
-            data = generate_batch(batch_size=args.train_batch_size)
+            data = generate_batch(batch_size=args.train_batch_size, source_dir=args.input_train, signal_length=args.train_signal_length)
             with open(output_path, 'wb') as f:
                 torch.save(data, f)
 
@@ -632,13 +646,13 @@ def main():
     if args.test_num_batches:
         existing_test_batches = 0
         for i in tqdm(range(args.test_num_batches)):
-            output_path = os.path.join(args.output_dir, f'testv2_{i}.pt')
+            output_path = os.path.join(args.output_dir, f'test10_{i}.pt')
             if not args.force_rewrite and Path(output_path).exists():
                 logger.debug(f'Skipping test {i} - already exists')
                 existing_test_batches += 1
                 continue
 
-            data = generate_batch(batch_size=args.test_batch_size, test=True)
+            data = generate_batch(batch_size=args.test_batch_size, test=True, source_dir=args.input_test, signal_length=args.test_signal_length)
             with open(output_path, 'wb') as f:
                 torch.save(data, f)
         logger.info(f"Finished creating {args.test_num_batches}  test batches, skipped {existing_test_batches} existing ones")

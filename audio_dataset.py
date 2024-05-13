@@ -23,7 +23,7 @@ class DictTorchPartedDataset(torch.utils.data.Dataset):
             if not p.startswith(self._prefix):
                 continue
             stripped_p = p[len(self._prefix) : p.rfind('.')]
-            data_idx = p[:p.rfind('.')].split('_')
+            data_idx = stripped_p.split('_')[-1]
             
             try:            
                 data_idx = int(data_idx)
