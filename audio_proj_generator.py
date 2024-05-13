@@ -589,7 +589,7 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
     ref_stft = ref_stft[:, :, :required_last_dim]
     target = target[:, :, :required_last_dim]
 
-    results = {'samples': x.cpu().detach(),
+    results = {'samples': samples.cpu().detach(),
                'ref_stft': ref_stft.cpu().detach(),
                'target': target.cpu().detach(),
                'perceived_signals': perceived_signals[:, :, 0].cpu().detach(),
