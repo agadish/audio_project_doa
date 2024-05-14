@@ -19,7 +19,7 @@ from tqdm import tqdm
 import argparse
 
 
-from config import ANGLE_HIGH, ANGLE_LOW, ANGLE_RES, C, DIM, ENABLE_HPF, EPS, HOP_LENGTH, MIC_ARRAY_CENTER, MIC_ARRAY_POS, MTYPE, NFFT, NSAMPLE, NUM_MICS, ORDER, ORIENTATION, SIGNAL_LEN, SPEAKER_HEIGHT, TEST_RADII, TEST_REVERB_TIMES, TRAIN_RAD_MEAN, TRAIN_RAD_VAR, TRAIN_REVERB_TIMES, TRAIN_SIR_HIGH, TRAIN_SIR_LOW, FS, L, MAX_WORKERS
+from config import ANGLE_HIGH, ANGLE_LOW, ANGLE_RES, C, DIM, ENABLE_HPF, EPS, HOP_LENGTH, MIC_ARRAY_CENTER, MIC_ARRAY_POS, MTYPE, NFFT, NSAMPLE, NUM_MICS, ORDER, ORIENTATION, SIGNAL_LEN, SPEAKER_HEIGHT, TEST_RADII, TEST_REVERB_TIMES, TRAIN_RAD_MEAN, TRAIN_RAD_VAR, TRAIN_REVERB_TIMES, TRAIN_SIR_HIGH, TRAIN_SIR_LOW, FS, L, MAX_WORKERS, REVERB_TAIL_LENGTH
 
 
 device = "cpu" # torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -46,7 +46,7 @@ def load_source_signals(source_dir='source_signals/LibriSpeech/dev-clean', batch
 
     # Iterate over batch size
     total_wav_len = 0.0
-    for _ in range(batch_size):
+    for _ in tqdm(range(batch_size), desc='Loading WAVs'):
         # Randomly select two different speakers
         selected_speakers = torch.randint(num_speakers, (2,), device=device)
         while selected_speakers[0] == selected_speakers[1]:
@@ -220,7 +220,6 @@ def generate_rir_batch(source_positions, reverb_times):
                 r, c = indices_order[i]
                 rirs[r, c] = future.result()
                 progress_bar.update(1)
-
 
     return rirs
 
@@ -439,36 +438,19 @@ class TimitRIR:
         return result
     
     def sample(self, n: int, allowed_radii: List[int], returned_reverbs_values: List[float]) -> pd.DataFrame:
+        if n % 4 != 0:
+            raise ValueError('Tidir only supports sampling number aligned to 4')
+        
         dir_meta_df = self.dir_meta_df
         if allowed_radii:
             dir_meta_df = dir_meta_df[dir_meta_df.radius.isin(allowed_radii)]
-        if returned_reverbs_values:
-            # Sample equally each reverb - first entry gets the leftover
-            nl = n // len(returned_reverbs_values)
-            nl_first = nl + n - nl * len(returned_reverbs_values)
-            first_sub_df = dir_meta_df[dir_meta_df.reverb == returned_reverbs_values[0]]
 
-            # If more than the rows in the DF should be added - add all the rows exactly oince
-            dfs: List[pd.DataFrame] = []
-            while nl_first > len(first_sub_df):
-                dfs.append(first_sub_df)
-                nl_first -= len(first_sub_df)
-            current_df = first_sub_df.sample(n=nl_first)
-
-            dfs.append(current_df)
-            for reverb in returned_reverbs_values[1:]:
-                sub_df = dir_meta_df[dir_meta_df['reverb'] == reverb]
-                remaining_length = nl
-                while remaining_length > len(sub_df):
-                    dfs.append(sub_df)
-                    remaining_length -= len(sub_df)
-                current_df = sub_df.sample(n=remaining_length)
-                dfs.append(current_df)
-
-            df = pd.concat(dfs, ignore_index=True)
-            df = df.sample(frac=1, ignore_index=True)
-        else:
-            df = dir_meta_df.sample(n=n)
+        sub_sample_size = n // 4
+        for radii in allowed_radii:
+            for reverb in returned_reverbs_values:
+                sub_df = dir_meta_df[(dir_meta_df['reverb'] == reverb) & (dir_meta_df['radii'] == radii)]
+                sample_df = sub_df.sample(n=sub_sample_size)
+                dfs.append(sample_df)
 
         df['rir'] = df['file_path'].apply(self._load_mat_as_torch)
         return df
@@ -510,11 +492,12 @@ def generate_coords_rirs_test(num_scenarios: int, allowed_radii: Tuple[float], r
     rirs = torch.stack(df.rir.tolist()).to(device)
     rirs = rirs.view(num_scenarios, 2, NUM_MICS, -1)
  
+
     return coordinates, angles, rirs
 
-
 def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSpeech/dev-clean',
-                   normalize=True, discard_dc=True, signal_length=SIGNAL_LEN, signal_fs=FS) -> Dict[str, torch.tensor]:
+                   normalize=True, discard_dc=True, signal_length=SIGNAL_LEN, signal_fs=FS,
+                   reverb_tail_length=REVERB_TAIL_LENGTH) -> Dict[str, torch.tensor]:
     """
     Generates a batch for the neural network.
     :param test: If True, generates a batch for test set, otherwise for training set.
@@ -543,15 +526,6 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
         # Generate RIRs
         logger.debug('Generating rir...')
         rirs = generate_rir_batch(source_positions=source_positions, reverb_times=TRAIN_REVERB_TIMES)
-
-        # Convolve speaker signals with RIRs
-        logger.debug('Conv rirs...')
-        perceived_signals = conv_rirs(scenario_signals=audio_signals, rirs=rirs)
-
-        # Mix pairs with interference
-        logger.debug('Mixing rirs...')
-        mixed_signals = mix_rirs(perceived_signals=perceived_signals, interfere=True)
-
     # If test batch, use scenarios given in the real RIRs
     else:
         # Generate (x, y) positions for speakers
@@ -563,16 +537,19 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
                                                                  returned_reverbs_values=TEST_REVERB_TIMES)
 
 
-        # DONE: load batch_size/2 RIRs with T60=0.160s and batch_size/2 RIRs with T60=0.160s
-        # DONE: note that finally the angles should be in range [0, 180]
+    # DONE: load batch_size/2 RIRs with T60=0.160s and batch_size/2 RIRs with T60=0.160s
+    # DONE: note that finally the angles should be in range [0, 180]
 
-        # Convolve speaker signals with RIRs
-        logger.debug('Conv rirs...')
-        perceived_signals = conv_rirs(scenario_signals=audio_signals, rirs=rirs)
+    # Convolve speaker signals with RIRs
+    logger.debug('Conv rirs...')
+    perceived_signals = conv_rirs(scenario_signals=audio_signals, rirs=rirs)
+        
+    # Crop perceived signals! Start on length of RIR -
+    perceived_signals = perceived_signals[:, :, :, :signal_length + reverb_tail_length]
 
-        # Mix pairs with no interference
-        logger.debug('Mixing rirs...')
-        mixed_signals = mix_rirs(perceived_signals=perceived_signals, interfere=False)
+    # Mix pairs with no interference
+    logger.debug('Mixing rirs...')
+    mixed_signals = mix_rirs(perceived_signals=perceived_signals, interfere=False)
 
     # Calculate RTFs and reference microphone magnitude tensor
     logger.debug('Calculatign RTF...')
@@ -580,20 +557,24 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
 
     # Calculate target
     logger.debug('Calculatign target...')
-    target = calculate_target(signals=audio_signals, doas=doas, discard_dc=discard_dc)
+    target = calculate_target(signals=perceived_signals[:,:,0], doas=doas, discard_dc=discard_dc)
     
-    logger.debug('Aligning all data to 16...')
-    last_dim = min([target.size(2), samples.size(3)])
-    required_last_dim = (last_dim // 16) * 16
-    samples = samples[:, :, :, :required_last_dim]
-    ref_stft = ref_stft[:, :, :required_last_dim]
-    target = target[:, :, :required_last_dim]
+    if torch.any(torch.isnan(samples)):
+        print("NANNNN DEBUG MEEE!")
+        import ipdb ; ipdb.set_trace()
+        print("NANNNN DEBUG MEEE!")
 
+    
     results = {'samples': samples.cpu().detach(),
-               'ref_stft': ref_stft.cpu().detach(),
-               'target': target.cpu().detach(),
-               'perceived_signals': perceived_signals[:, :, 0].cpu().detach(),
-               'doas': doas.cpu()}
+               'target': target.cpu().detach()}
+               
+    if test:
+        results.update({
+            'ref_stft': ref_stft.cpu().detach(),
+            'perceived_signals': perceived_signals[:, :, 0].cpu().detach(),
+            'mixed_signals': mixed_signals.cpu().detach(),
+            'doas': doas.cpu()
+        })
                
     return results
 
@@ -604,11 +585,13 @@ def parse_args():
     parser.add_argument("--test-batch-size", type=int, default=30, help="Batch size for test batches") # 30x2 = 60
     parser.add_argument("--test-num-batches", type=int, default=1, help="Number of test batches")
     parser.add_argument("-o", "--output-dir", type=str, default='data_batches', help='Output directory for data batches')
-    parser.add_argument("-f", "--force-rewrite", type=bool, default=True, help='Overwrite existing data')
+    parser.add_argument("-f", "--force-rewrite", type=bool, default=False, help='Overwrite existing data')
     parser.add_argument("--input-train", type=str, default='source_signals/LibriSpeech/train-clean-100', help='Data directory or train')
     parser.add_argument("--input-test", type=str, default='source_signals/LibriSpeech/test-other', help='Data directory of test')
-    parser.add_argument("--signal-length-train", type=int, default=FS*0.76, help='Signal length on train')
-    parser.add_argument("--signal-length-test", type=int, default=FS*10, help='Signal length on test')
+    parser.add_argument("--signal-length-train", type=int, default=int(FS*0.6), help='Signal length on train')
+    parser.add_argument("--signal-length-test", type=int, default=int(FS*10), help='Signal length on test')
+    parser.add_argument("--reverb-tail-train", type=int, default=int(FS*0.16), help="Length of reverb tail for perceived train signals")
+    parser.add_argument("--reverb-tail-test", type=int, default=int(FS*0.235), help="Length of reverb tail for perceived test signals")
     
     args = parser.parse_args()
     return args
@@ -628,16 +611,25 @@ def main():
     logger.info(f'Creating {args.train_num_batches} train batches')
     if args.train_num_batches:
         existing_train_batches = 0
-        for i in tqdm(range(args.train_num_batches)):
-            output_path = os.path.join(args.output_dir, f'train1.2_{i}.pt')
-            if not args.force_rewrite and Path(output_path).exists():
-                logger.debug(f'Skipping {output_path} - already exists')
-                existing_train_batches += 1
-                continue
-            
-            data = generate_batch(batch_size=args.train_batch_size, source_dir=args.input_train, signal_length=args.train_signal_length)
-            with open(output_path, 'wb') as f:
-                torch.save(data, f)
+        with tqdm(total=args.train_num_batches, desc='Creating train batches') as pb:
+            for i in range(args.train_num_batches):
+                output_path = os.path.join(args.output_dir, f'train06r076_{i}.pt')
+                if not args.force_rewrite and Path(output_path).exists():
+                    logger.debug(f'Skipping {output_path} - already exists')
+                    existing_train_batches += 1
+                    pb.total -= 1
+                    continue
+                
+                while True:
+                    data = generate_batch(batch_size=args.train_batch_size, source_dir=args.input_train, signal_length=int(args.signal_length_train),
+                                        reverb_tail_length=args.reverb_tail_train)
+                    # RIR generator may fail - retry
+                    if not torch.any(torch.isnan(data['samples'])):
+                        break
+
+                with open(output_path, 'wb') as f:
+                    torch.save(data, f)
+                pb.update(1)
 
         logger.info(f"Finished creating {args.train_num_batches} train batches, skipped {existing_train_batches} existing ones")
     
@@ -645,16 +637,25 @@ def main():
     logger.info(f'Creating {args.test_num_batches} test batches') 
     if args.test_num_batches:
         existing_test_batches = 0
-        for i in tqdm(range(args.test_num_batches)):
-            output_path = os.path.join(args.output_dir, f'test10_{i}.pt')
-            if not args.force_rewrite and Path(output_path).exists():
-                logger.debug(f'Skipping test {i} - already exists')
-                existing_test_batches += 1
-                continue
+        with tqdm(total=args.test_num_batches, desc='Creating test batches') as pb:
+            for i in range(args.test_num_batches):
+                output_path = os.path.join(args.output_dir, f'test10r0235revrad_{i}.pt')
+                if not args.force_rewrite and Path(output_path).exists():
+                    logger.debug(f'Skipping test {i} - already exists')
+                    existing_test_batches += 1
+                    pb.total -= 1
+                    continue
+                
+                while True:
+                    data = generate_batch(batch_size=args.test_batch_size, test=True, source_dir=args.input_test, signal_length=int(args.signal_length_test),
+                                        reverb_tail_length=args.reverb_tail_test)
+                    # RIR generator may fail - retry
+                    if not torch.any(torch.isnan(data['samples'])):
+                        break
+                with open(output_path, 'wb') as f:
+                    torch.save(data, f)
+                pb.update(1)
 
-            data = generate_batch(batch_size=args.test_batch_size, test=True, source_dir=args.input_test, signal_length=args.test_signal_length)
-            with open(output_path, 'wb') as f:
-                torch.save(data, f)
         logger.info(f"Finished creating {args.test_num_batches}  test batches, skipped {existing_test_batches} existing ones")
 
 if __name__ == '__main__':

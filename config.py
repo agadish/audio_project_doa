@@ -30,6 +30,7 @@ NSAMPLE_COEF = 0.8  # Proportion between nsample and maximal (discrete) reverb t
 MAX_REVERB_TIME = 0.4  # Maximal reverb time in project [s]
 NSAMPLE = round(NSAMPLE_COEF * MAX_REVERB_TIME * FS)  # RIR length
 ORIENTATION = (0, 0)  # Microphone orientation
+REVERB_TAIL_LENGTH = int(FS * 0.16)
 
 NFFT = FRAME_LENGTH  # FFT length in STFT
 OVERLAP = 0.75  # Frame overlap in STFT

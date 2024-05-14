@@ -11,7 +11,7 @@ class UnetDACLighting(L.LightningModule):
         self.loss_fn = loss_fn
 
     def training_step(self, batch, batch_idx):
-        samples, ref_stft, target = batch
+        samples, _, target = batch
         samples = samples.to(self.device, dtype=torch.float)  # (B,S,V)
         target = target.to(self.device)
 
@@ -21,7 +21,8 @@ class UnetDACLighting(L.LightningModule):
         # output_directions = torch.dot(outputs, ref_stft * ref_stft.T)
         # output_angle = torch.argmax(output_directions, axis=1)
         loss = self.loss_fn(outputs, target // ANGLE_RES)
-        self.log("train_loss", loss, prog_bar=True, on_step=False, on_epoch=True)
+        self.log("train_loss", loss, prog_bar=True, on_step=True, on_epoch=True)
+
         return loss
 
     def configure_optimizers(self):
@@ -29,14 +30,12 @@ class UnetDACLighting(L.LightningModule):
         return optimizer
     
     def validation_step(self, batch, batch_idx):
-        samples, ref_stft, target = batch
+        samples, _, target = batch
         samples = samples.to(self.device, dtype=torch.float)  # (B,S,V)
         target = target.to(self.device)
 
         outputs = self.model(samples)
         loss = self.loss_fn(outputs, target // ANGLE_RES)
-        self.log('val_loss', loss, prog_bar=True, on_step=False, on_epoch=True)
+        self.log('val_loss', loss, prog_bar=True, on_step=True, on_epoch=True)
+     
         return loss
-
-
-

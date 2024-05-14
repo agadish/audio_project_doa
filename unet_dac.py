@@ -15,6 +15,7 @@ class UnetDAC(nn.Module):
         self.input_shape = (L, K, 2 * (M - 1))
         self.dropout_probability = dropout_probability
         self.dropout = nn.Dropout(p=dropout_probability)
+        self.instancenorm2d = nn.InstanceNorm2d(2 * (M - 1), affine=False)
 
         # Encoder
         # In the encoder, convolutional layers with the Conv2d function are used to extract features from the input image. 
@@ -89,27 +90,27 @@ class UnetDAC(nn.Module):
         nn.init.xavier_uniform_(self.upconv2.weight)  
         nn.init.xavier_uniform_(self.upconv3.weight)  
 
-
     def forward(self, data):
         # Encoder
-        data = F.elu(self.dropout(self.e11(data)))
-        xe12 = F.elu(self.dropout(self.e12(data)))
+        data = self.instancenorm2d(data)
+        data = self.dropout(F.elu(self.e11(data)))
+        xe12 = self.dropout(F.elu(self.e12(data)))
         data = self.pool1(xe12)
 
-        data = F.elu(self.dropout(self.e21(data)))
-        xe22 = F.elu(self.dropout(self.e22(data)))
+        data = self.dropout(F.elu(self.e21(data)))
+        xe22 = self.dropout(F.elu(self.e22(data)))
         data = self.pool2(xe22)
 
-        data = F.elu(self.dropout(self.e31(data)))
-        xe32 = F.elu(self.dropout(self.e32(data)))
+        data = self.dropout(F.elu(self.e31(data)))
+        xe32 = self.dropout(F.elu(self.e32(data)))
         data = self.pool3(xe32)
 
-        data = F.elu(self.dropout(self.e41(data)))
-        xe42 = F.elu(self.dropout(self.e42(data)))
+        data = self.dropout(F.elu(self.e41(data)))
+        xe42 = self.dropout(F.elu(self.e42(data)))
         data = self.pool4(xe42)
 
-        data = F.elu(self.dropout(self.e51(data)))
-        data = F.elu(self.dropout(self.e52(data)))
+        data = self.dropout(F.elu(self.e51(data)))
+        data = self.dropout(F.elu(self.e52(data)))
         
         # Decoder
         data = self.upconv1(data) # 
@@ -124,26 +125,26 @@ class UnetDAC(nn.Module):
         dim=1: torch.Size([128, 64, 2])
         dim=0: torch.Size([256, 32, 2])
         """
-        data = F.elu(self.dropout(self.d11(data)))
-        data = F.elu(self.dropout(self.d12(data)))
+        data = self.dropout(F.elu(self.d11(data)))
+        data = self.dropout(F.elu(self.d12(data)))
 
         data = self.upconv2(data)
         data = torch.cat([data, xe32], dim=1)
         del xe32
-        data = F.elu(self.dropout(self.d21(data)))
-        data = F.elu(self.dropout(self.d22(data)))
+        data = self.dropout(F.elu(self.d21(data)))
+        data = self.dropout(F.elu(self.d22(data)))
 
         data = self.upconv3(data)
         data = torch.cat([data, xe22], dim=1)
         del xe22
-        data = F.elu(self.dropout(self.d31(data)))
-        data = F.elu(self.dropout(self.d32(data)))
+        data = self.dropout(F.elu(self.d31(data)))
+        data = self.dropout(F.elu(self.d32(data)))
 
         data = self.upconv4(data)
         data = torch.cat([data, xe12], dim=1)
         del xe12
-        data = F.elu(self.dropout(self.d41(data)))
-        data = F.elu(self.dropout(self.d42(data)))
+        data = self.dropout(F.elu(self.d41(data)))
+        data = self.dropout(F.elu(self.d42(data)))
 
         # Output layer
         data = self.outconv(data)

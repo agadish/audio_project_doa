@@ -170,3 +170,8 @@ events.out.*
 conda-environment.yml
 config.yaml
 wandb*
+audio_proj_generator_v2.py
+helpers
+lightning_model
+lightning_logs
+tb_logs
