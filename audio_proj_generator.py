@@ -19,7 +19,7 @@ from tqdm import tqdm
 import argparse
 
 
-from config import ANGLE_HIGH, ANGLE_LOW, ANGLE_RES, C, DIM, ENABLE_HPF, EPS, HOP_LENGTH, MIC_ARRAY_CENTER, MIC_ARRAY_POS, MTYPE, NFFT, NSAMPLE, NUM_MICS, ORDER, ORIENTATION, SIGNAL_LEN, SPEAKER_HEIGHT, TEST_RADII, TEST_REVERB_TIMES, TRAIN_RAD_MEAN, TRAIN_RAD_VAR, TRAIN_REVERB_TIMES, TRAIN_SIR_HIGH, TRAIN_SIR_LOW, FS, L, MAX_WORKERS, REVERB_TAIL_LENGTH
+from config import ANGLE_HIGH, ANGLE_LOW, ANGLE_RES, C, DIM, ENABLE_HPF, EPS, HOP_LENGTH, MIC_ARRAY_CENTER, MIC_ARRAY_POS, MTYPE, NFFT, NSAMPLE, NUM_MICS, ORDER, ORIENTATION, SIGNAL_LEN, SPEAKER_HEIGHT, TEST_RADII, TEST_REVERB_TIMES, TRAIN_RAD_MEAN, TRAIN_RAD_VAR, TRAIN_REVERB_TIMES, TRAIN_SIR_HIGH, TRAIN_SIR_LOW, FS, L, MAX_WORKERS, REVERB_TAIL_LENGTH, SHOULD_REVERSE_MICROPHONES
 
 
 device = "cpu" # torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -387,9 +387,10 @@ class SpeakerConf:
     reverb: float
 
 class TimitRIR:
-    def __init__(self, base_dir: str = 'timit_rir'):
+    def __init__(self, base_dir: str = 'timit_rir', fs: int = FS):
         super().__init__()
         self.__base_dir = base_dir
+        self.__fs = fs
 
     @cached_property
     def dir_meta_df(self) -> pd.DataFrame:
@@ -431,28 +432,35 @@ class TimitRIR:
     
     def _load_mat_as_torch(self, mat_path: str) -> torch.tensor:
         mat = scipy.io.loadmat(mat_path)
-        numpy_impulse_response = mat['impulse_response']
-        result = torch.from_numpy(numpy_impulse_response).float()
-        # 48000x8 -> 1x8x48000
-        result = result.T.unsqueeze(0)
-        return result
+        data_impulse_response = mat['impulse_response']
+        impulse_response_fs = 48000
+
+        rir = torch.tensor(data_impulse_response.T, dtype=torch.float32)
+        # Reorder microphones
+        if SHOULD_REVERSE_MICROPHONES:
+            rir = rir.flip((0, ))
+            
+        # 8 x 16000
+        waveform = torchaudio.transforms.Resample(impulse_response_fs, self.__fs)(rir)
+
+        return waveform
     
     def sample(self, n: int, allowed_radii: List[int], returned_reverbs_values: List[float]) -> pd.DataFrame:
         if n % 4 != 0:
             raise ValueError('Tidir only supports sampling number aligned to 4')
         
         dir_meta_df = self.dir_meta_df
-        if allowed_radii:
-            dir_meta_df = dir_meta_df[dir_meta_df.radius.isin(allowed_radii)]
 
+        dfs = []
         sub_sample_size = n // 4
-        for radii in allowed_radii:
+        for radius in allowed_radii:
             for reverb in returned_reverbs_values:
-                sub_df = dir_meta_df[(dir_meta_df['reverb'] == reverb) & (dir_meta_df['radii'] == radii)]
-                sample_df = sub_df.sample(n=sub_sample_size)
-                dfs.append(sample_df)
+                sub_df = dir_meta_df[(dir_meta_df['reverb'] == reverb) & (dir_meta_df['radius'] == radius)]
+                sample_dfs = [sub_df.sample(n=2, replace=False).reset_index(drop=True) for _ in range(sub_sample_size)]
+                dfs.extend(sample_dfs)
 
-        df['rir'] = df['file_path'].apply(self._load_mat_as_torch)
+        df = pd.concat(dfs).reset_index(drop=True)
+        # df['rir'] = df['file_path'].apply(self._load_mat_as_torch)
         return df
 
 
@@ -470,11 +478,21 @@ def generate_coords_rirs_test(num_scenarios: int, allowed_radii: Tuple[float], r
     - coordinates (torch.Tensor): Tensor of shape (num_scenarios, 2, 2) containing
       pairs of (x, y) coordinates for each scenario.
     - DOAs (torch.Tensor): Tensor of shape (num_scenarios, 2) containing pairs of DOAs.
+    - rir (torch.Tensor): Tensor of RIRs of shape (num_scenarios, 2, NUM_MICS, NSAMPLE)
+
     """
 
     # Generate random angles
+    
     timit_rir_gen = TimitRIR(base_dir=TIMIT_RIR_PATH)
-    df = timit_rir_gen.sample(num_scenarios * 2, allowed_radii=allowed_radii, returned_reverbs_values=returned_reverbs_values)
+    df = timit_rir_gen.sample(num_scenarios, allowed_radii=allowed_radii, returned_reverbs_values=returned_reverbs_values)
+    global_rirs = timit_rir_gen.dir_meta_df
+    file_path_to_rir = {file_path: timit_rir_gen._load_mat_as_torch(file_path) for file_path in global_rirs.file_path.unique()}
+    rirs = torch.stack(df.file_path.apply(lambda file_path: file_path_to_rir[file_path]).tolist())
+    rirs = rirs.view(num_scenarios, 2, NUM_MICS, -1)
+    # rirs = torch.stack([[file_path_to_rir[file_path] for file_path in row] for row in rirs_filepaths])
+    # row: file_path:str, rir: torch.tensor
+
     angles = torch.tensor(df.angle.values, device=device)
     angles = angles.view(-1, 2)
 
@@ -489,9 +507,8 @@ def generate_coords_rirs_test(num_scenarios: int, allowed_radii: Tuple[float], r
     y_coords = radii_perturbed * torch.sin(angles_rad) + MIC_ARRAY_CENTER[1]
 
     coordinates = torch.stack((x_coords, y_coords), dim=-1).to(device)
-    rirs = torch.stack(df.rir.tolist()).to(device)
-    rirs = rirs.view(num_scenarios, 2, NUM_MICS, -1)
- 
+    # rirs = torch.stack(df.rir.tolist()).to(device)
+    # rirs = rirs.view(num_scenarios, 2, NUM_MICS, -1)
 
     return coordinates, angles, rirs
 
@@ -582,7 +599,7 @@ def parse_args():
     parser = argparse.ArgumentParser('Data generator for audio project')
     parser.add_argument("--train-batch-size", type=int, default=64, help="Batch size for train batches")
     parser.add_argument("--train-num-batches", type=int, default=94, help="Number of train batches")
-    parser.add_argument("--test-batch-size", type=int, default=30, help="Batch size for test batches") # 30x2 = 60
+    parser.add_argument("--test-batch-size", type=int, default=60, help="Batch size for test batches") # 30x2 = 60
     parser.add_argument("--test-num-batches", type=int, default=1, help="Number of test batches")
     parser.add_argument("-o", "--output-dir", type=str, default='data_batches', help='Output directory for data batches')
     parser.add_argument("-f", "--force-rewrite", type=bool, default=False, help='Overwrite existing data')

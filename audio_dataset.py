@@ -62,12 +62,6 @@ class DictTorchPartedDataset(torch.utils.data.Dataset):
         return [data[field][idx_in * self._virtual_batch_size : (idx_in + 1) * self._virtual_batch_size].to(self._device)
                 for field in self._fields]
     
-    def __getitem__(self, idx):
-        if not self._pin_memory:
-            return self._getitem_dummy(idx)
-        
-        
-    
     def _process_data(self, data: Dict[str, torch.tensor]):
         raise ValueError('Dont need it')
         target = data['target'] // ANGLE_RES

@@ -27,7 +27,18 @@ class UnetDACLighting(L.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
-        return optimizer
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer)
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'monitor': 'val_loss',  # Monitor validation loss for adjusting LR
+                'mode': 'min',  # Minimize validation loss
+                'factor': 0.1,  # Multiply LR by 0.1 when triggered
+                'patience': 10,  # Wait for 10 epochs before reducing LR
+                'verbose': True  # Print updates
+            }
+        }
     
     def validation_step(self, batch, batch_idx):
         samples, _, target = batch

@@ -15,7 +15,7 @@ class UnetDAC(nn.Module):
         self.input_shape = (L, K, 2 * (M - 1))
         self.dropout_probability = dropout_probability
         self.dropout = nn.Dropout(p=dropout_probability)
-        self.instancenorm2d = nn.InstanceNorm2d(2 * (M - 1), affine=False)
+        self.instancenorm2d = nn.BatchNorm2d(2 * (M - 1), affine=False)
 
         # Encoder
         # In the encoder, convolutional layers with the Conv2d function are used to extract features from the input image. 
@@ -130,19 +130,16 @@ class UnetDAC(nn.Module):
 
         data = self.upconv2(data)
         data = torch.cat([data, xe32], dim=1)
-        del xe32
         data = self.dropout(F.elu(self.d21(data)))
         data = self.dropout(F.elu(self.d22(data)))
 
         data = self.upconv3(data)
         data = torch.cat([data, xe22], dim=1)
-        del xe22
         data = self.dropout(F.elu(self.d31(data)))
         data = self.dropout(F.elu(self.d32(data)))
 
         data = self.upconv4(data)
         data = torch.cat([data, xe12], dim=1)
-        del xe12
         data = self.dropout(F.elu(self.d41(data)))
         data = self.dropout(F.elu(self.d42(data)))
 

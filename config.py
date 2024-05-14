@@ -3,6 +3,7 @@
 import torch
 import rir_generator as rir
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 C = 343  # Sound velocity
 FS = int(16e3)  # Sample rate [KHz]
 SIGNAL_LEN_SECS = 0.9  # Fixed length of audio signals [s]
@@ -15,6 +16,7 @@ L = (6.0, 6.0, 2.4)  # Room dimensions [x y z] (m)
 MIC_ARRAY_POS = ((2.87, 1.0, 1.5), (2.9, 1.0, 1.5), (2.93, 1.0, 1.5), (2.96, 1.0, 1.5),
                  (3.04, 1.0, 1.5), (3.07, 1.0, 1.5), (3.1, 1.0, 1.5), (3.13, 1.0, 1.5))  # Mics' positions
 MIC_ARRAY_CENTER = (3.0, 1.0, 1.5)
+SHOULD_REVERSE_MICROPHONES = True
 ANGLE_RES = 15  # Circular source setup's angle resolution [deg]
 ANGLE_LOW = 0  # Circular source setup's lowest possible angle [deg]
 ANGLE_HIGH = 180  # Circular source setup's highest possible angle [deg]
