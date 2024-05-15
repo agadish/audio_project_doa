@@ -12,7 +12,7 @@ class UnetDACLighting(L.LightningModule):
         self.loss_fn = loss_fn
 
     def training_step(self, batch, batch_idx):
-        samples, _, target = batch
+        samples, target = batch
         samples = samples.to(self.device, dtype=torch.float)  # (B,S,V)
         target = target.to(self.device)
 
@@ -42,7 +42,7 @@ class UnetDACLighting(L.LightningModule):
         }
     
     def validation_step(self, batch, batch_idx):
-        samples, _, target = batch
+        samples, target = batch
         samples = samples.to(self.device, dtype=torch.float)  # (B,S,V)
         target = target.to(self.device)
 
