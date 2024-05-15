@@ -1,6 +1,7 @@
 import lightning as L
 import torch
 from config import ANGLE_RES
+from metrics import mixed_batch_metrics, separated_batch_metrics
 
 
 class UnetDACLighting(L.LightningModule):
@@ -50,3 +51,24 @@ class UnetDACLighting(L.LightningModule):
         self.log('val_loss', loss, prog_bar=True, on_step=True, on_epoch=True)
      
         return loss
+
+    def test_step(self, batch, batch_idx):
+        samples, ref_stft, target, mixed_signals, perceived_signals = batch
+
+        samples = samples.to(self.device, dtype=torch.float)  # (B,S,V)
+        target = target.to(self.device)
+        probs = self.model(samples)
+
+        batch_dict = {
+            'ref_stft': ref_stft,
+            'mixed_signals': mixed_signals,
+            'perceived_signals': perceived_signals,
+            'probs': probs
+        }
+        
+        batch_mix = mixed_batch_metrics(batch_dict)
+        batch_sep = separated_batch_metrics(batch_dict)
+        avg_mix = batch_mix.mean(dim=0)
+        avg_sep = batch_sep.mean(dim=0)
+        
+        return {'avg_mix': avg_mix, 'avg_sep': avg_sep}

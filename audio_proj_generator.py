@@ -597,19 +597,27 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
 
 def parse_args():
     parser = argparse.ArgumentParser('Data generator for audio project')
+    parser.add_argument("--input-train", type=str, default='source_signals/LibriSpeech/train-clean-100', help='Data directory or train')
     parser.add_argument("--train-batch-size", type=int, default=64, help="Batch size for train batches")
     parser.add_argument("--train-num-batches", type=int, default=94, help="Number of train batches")
+    parser.add_argument("--signal-length-train", type=int, default=int(FS*0.6), help='Signal length on train')
+    parser.add_argument("--reverb-tail-train", type=int, default=int(FS*0.16), help="Length of reverb tail for perceived train signals")
+
+    parser.add_argument("--input-validation", type=str, default='source_signals/LibriSpeech/train-clean-100', help='Data directory or validation')
+    parser.add_argument("--validation-batch-size", type=int, default=64, help="Batch size for validation batches")
+    parser.add_argument("--validation-num-batches", type=int, default=8, help="Number of validation batches")
+    parser.add_argument("--signal-length-validation", type=int, default=int(FS*0.6), help='Signal length on validation')
+    parser.add_argument("--reverb-tail-validation", type=int, default=int(FS*0.16), help="Length of reverb tail for perceived validation signals")
+
+    parser.add_argument("--input-test", type=str, default='source_signals/LibriSpeech/test-other', help='Data directory of test')
     parser.add_argument("--test-batch-size", type=int, default=60, help="Batch size for test batches") # 30x2 = 60
     parser.add_argument("--test-num-batches", type=int, default=1, help="Number of test batches")
+    parser.add_argument("--signal-length-test", type=int, default=int(FS*10), help='Signal length on test')
+    parser.add_argument("--reverb-tail-test", type=int, default=int(FS*0.235), help="Length of reverb tail for perceived test signals")
+
     parser.add_argument("-o", "--output-dir", type=str, default='data_batches', help='Output directory for data batches')
     parser.add_argument("-f", "--force-rewrite", type=bool, default=False, help='Overwrite existing data')
-    parser.add_argument("--input-train", type=str, default='source_signals/LibriSpeech/train-clean-100', help='Data directory or train')
-    parser.add_argument("--input-test", type=str, default='source_signals/LibriSpeech/test-other', help='Data directory of test')
-    parser.add_argument("--signal-length-train", type=int, default=int(FS*0.6), help='Signal length on train')
-    parser.add_argument("--signal-length-test", type=int, default=int(FS*10), help='Signal length on test')
-    parser.add_argument("--reverb-tail-train", type=int, default=int(FS*0.16), help="Length of reverb tail for perceived train signals")
-    parser.add_argument("--reverb-tail-test", type=int, default=int(FS*0.235), help="Length of reverb tail for perceived test signals")
-    
+
     args = parser.parse_args()
     return args
 
@@ -650,7 +658,34 @@ def main():
 
         logger.info(f"Finished creating {args.train_num_batches} train batches, skipped {existing_train_batches} existing ones")
     
-    # 3. Create test batches
+     # 3. Create validation batches
+    logger.info(f'Creating {args.validation_num_batches} validation batches')
+    if args.validation_num_batches:
+        existing_validation_batches = 0
+        with tqdm(total=args.validation_num_batches, desc='Creating validation batches') as pb:
+            for i in range(args.validation_num_batches):
+                output_path = os.path.join(args.output_dir, f'validation06r076_{i}.pt')
+                if not args.force_rewrite and Path(output_path).exists():
+                    logger.debug(f'Skipping {output_path} - already exists')
+                    existing_validation_batches += 1
+                    pb.total -= 1
+                    continue
+                
+                while True:
+                    data = generate_batch(batch_size=args.validation_batch_size, source_dir=args.input_validation, signal_length=int(args.signal_length_validation),
+                                        reverb_tail_length=args.reverb_tail_validation)
+                    # RIR generator may fail - retry
+                    if not torch.any(torch.isnan(data['samples'])):
+                        break
+
+                with open(output_path, 'wb') as f:
+                    torch.save(data, f)
+                pb.update(1)
+
+        logger.info(f"Finished creating {args.validation_num_batches} validation batches, skipped {existing_validation_batches} existing ones")
+    
+
+    # 4. Create test batches
     logger.info(f'Creating {args.test_num_batches} test batches') 
     if args.test_num_batches:
         existing_test_batches = 0

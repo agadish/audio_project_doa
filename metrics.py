@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import torch
 from torchaudio.transforms import Spectrogram, InverseSpectrogram
+from torchaudio import save
 import numpy as np
 
 import config
@@ -8,6 +9,7 @@ import config
 try:
 	import bsseval
 except ImportError:
+	# pip install git+https://github.com/sigsep/bsseval@92535ea70e5c0864286ee5f0c5a4fa762de98546
 	import sys
 	sys.path.insert(0, 'bsseval-master')
 	import bsseval
@@ -18,21 +20,21 @@ stft = Spectrogram(
 	win_length=config.NFFT,
 	hop_length=config.HOP_LENGTH,
 	power=None  # Complex spectrum
-).to(config.device)
+).to(config.DEVICE)
 
 istft = InverseSpectrogram(
 	n_fft=config.NFFT,
 	win_length=config.NFFT,
 	hop_length=config.HOP_LENGTH,
 	onesided=True
-).to(config.device)
+).to(config.DEVICE)
 
 
 def bss_eval(ref, est):
 	"""Retuns a tensor of SDR, SIR."""
 	sdr, isr, sir, sar = bsseval.evaluate(
-		references=ref.unsqueeze(-1).numpy(),
-		estimates=est.unsqueeze(-1).numpy(),
+		references=ref.unsqueeze(-1).detach().cpu().numpy(),
+		estimates=est.unsqueeze(-1).detach().cpu().numpy(),
 		# win=1*44100,
 		# hop=1*44100,
 		# mode='v4',
@@ -43,8 +45,6 @@ def bss_eval(ref, est):
 		torch.tensor(np.mean(sdr, axis=1)),
 		torch.tensor(np.mean(sir, axis=1))
 	])
-
-
 
 
 class SeparatedSource:
@@ -89,6 +89,13 @@ class SeparatedSource:
 			ref=speaker_signal.unsqueeze(0),
 			est=self.signal().unsqueeze(0)
 		).squeeze(1)
+	
+	def save(self, path):
+		save(
+			uri=path,
+			src=self.signal().unsqueeze(0),
+			sample_rate=config.FS
+		)
 
 
 def speaker_angles(sources):
@@ -153,7 +160,7 @@ def separated_batch_metrics(batch):
 	])
 
 
-def mixed_batch_metrics(batch, mixed_signals):
+def mixed_batch_metrics(batch):
 	"""Returns a tensor with
 	shape=(batch_size, speaker_num, sdr_or_sir).
 	"""
@@ -162,14 +169,13 @@ def mixed_batch_metrics(batch, mixed_signals):
 	refs = refs.view(-1, refs.shape[-1])
 	
 	# Repeat signals twice [mixed0, mixed0, mixed1, mixed1...]
-	mixed_signals = refs[::2]
-	ests = mixed_signals.repeat_interleave(2, dim=0)
+	ests = batch['mixed_signals'].repeat_interleave(2, dim=0)
 	
 	# Convert back to indexing by [smp_num, speaker_num, t]
 	return bss_eval(ref=refs, est=ests).view(-1, 2, 2)
 
 
-def print_batch_metrics(batch, mixed_signals, verbose=False):
+def print_batch_metrics(batch, verbose=False):
 	"""Calculates & prints the average metrics of this batch, for each
 	speaker. if verbose=True, prints the metrics of each samples as
 	well,
@@ -178,7 +184,7 @@ def print_batch_metrics(batch, mixed_signals, verbose=False):
 	AVG_TITLE  = "[ BATCH AVG ]========[ SDR ]=====[ SIR ]===================="
 	TEMPLATE   = "Speaker{:5d}:        {:7.3f}     {:7.3f}"
 	
-	batch_mix = mixed_batch_metrics(batch, mixed_signals)
+	batch_mix = mixed_batch_metrics(batch)
 	batch_sep = separated_batch_metrics(batch)
 	
 	def print_metrics(mixed_metrics, separated_metrics, title):
@@ -207,4 +213,9 @@ def print_batch_metrics(batch, mixed_signals, verbose=False):
 
 if __name__ == '__main__':
 	batch = torch.load('example_batch2.pt')
-	print_batch_metrics(batch, ..., verbose=False)
+	
+	refs = batch['perceived_signals']
+	refs = refs.view(-1, refs.shape[-1])
+	batch['mixed_signals'] = refs[::2]
+	
+	print_batch_metrics(batch, verbose=False)
