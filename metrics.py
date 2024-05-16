@@ -32,9 +32,11 @@ istft = InverseSpectrogram(
 
 def bss_eval(ref, est):
 	"""Retuns a tensor of SDR, SIR."""
+	ref_np = ref.unsqueeze(-1).detach().cpu().numpy()
+	est_np = est.unsqueeze(-1).detach().cpu().numpy()
 	sdr, isr, sir, sar = bsseval.evaluate(
-		references=ref.unsqueeze(-1).detach().cpu().numpy(),
-		estimates=est.unsqueeze(-1).detach().cpu().numpy(),
+		references=ref_np,
+		estimates=est_np,
 		# win=1*44100,
 		# hop=1*44100,
 		# mode='v4',
