@@ -7,9 +7,9 @@ import numpy as np
 import config
 
 try:
+	# pip install git+https://github.com/sigsep/bsseval@92535ea70e5c0864286ee5f0c5a4fa762de98546
 	import bsseval
 except ImportError:
-	# pip install git+https://github.com/sigsep/bsseval@92535ea70e5c0864286ee5f0c5a4fa762de98546
 	import sys
 	sys.path.insert(0, 'bsseval-master')
 	import bsseval
@@ -31,22 +31,24 @@ istft = InverseSpectrogram(
 
 
 def bss_eval(ref, est):
-	"""Retuns a tensor of SDR, SIR."""
-	ref_np = ref.unsqueeze(-1).detach().cpu().numpy()
-	est_np = est.unsqueeze(-1).detach().cpu().numpy()
+	"""Retuns a tensor of SDR, SIR.
+	ref.shape = (n_src, ref_signal_len)
+	est.shape = (n_src, est_signal_len)
+	return.shape = (n_src, SDR_or_SIR=2)
+	"""
 	sdr, isr, sir, sar = bsseval.evaluate(
-		references=ref_np,
-		estimates=est_np,
+		references=ref.unsqueeze(-1).detach().cpu().numpy(),
+		estimates=est.unsqueeze(-1).detach().cpu().numpy(),
 		# win=1*44100,
 		# hop=1*44100,
 		# mode='v4',
 		# padding=True
 	)
-	
-	return torch.stack([
-		torch.tensor(np.mean(sdr, axis=1)),
-		torch.tensor(np.mean(sir, axis=1))
-	])
+	avg_sdr = torch.tensor(np.mean(sdr, axis=1))
+	avg_sir = torch.tensor(np.mean(sir, axis=1))
+	return torch.stack((avg_sdr, avg_sir), dim=1)
+
+
 
 
 class SeparatedSource:
@@ -87,10 +89,23 @@ class SeparatedSource:
 		speaker_spec = speaker_spec[:, :(t // 16) * 16]
 		speaker_signal = istft(speaker_spec)
 		
-		return bss_eval(
-			ref=speaker_signal.unsqueeze(0),
-			est=self.signal().unsqueeze(0)
-		).squeeze(1)
+		# Reshape (siglen,) -> (n_src=1, siglen)
+		ref = speaker_signal.unsqueeze(0).detach().cpu().numpy()
+		est = self.signal().unsqueeze(0).detach().cpu().numpy()
+		
+		# Reshape result (n_src=1, SDR_or_SIR=2) -> (SDR_or_SIR=2,)
+		return bss_eval(ref, est).squeeze(0)
+	
+	@classmethod
+	def speaker_angles(cls, sources):
+		"""Returns the 2 angle numbers where the speakers are (most likely)
+		located.
+		"""
+		energies = [src.energy() for src in sources]
+		# `argpartition` to get the indices, AKA angle numbers.
+		partitioned = np.argpartition(energies, len(sources) - 2)
+		max_angles = tuple(partitioned[-2:])
+		return max_angles
 	
 	def save(self, path):
 		save(
@@ -98,24 +113,6 @@ class SeparatedSource:
 			src=self.signal().unsqueeze(0),
 			sample_rate=config.FS
 		)
-
-
-def speaker_angles(sources):
-	"""Returns the 2 angle numbers where the speakers are (most likely)
-	located.
-	"""
-	energies = [src.energy() for src in sources]
-	# `argpartition` to get the indices, AKA angle numbers.
-	partitioned = np.argpartition(energies, len(sources) - 2)
-	max_angles = tuple(partitioned[-2:])
-	return max_angles
-
-
-def zip_metrics(sources_pred, speakers_gt):
-	return torch.stack([
-		pred.metrics(gt)
-		for pred, gt in zip(sources_pred, speakers_gt)
-	])
 
 
 def separated_sample_metrics(ref_spec, samp_probs, speaker_signals_gt):
@@ -131,20 +128,26 @@ def separated_sample_metrics(ref_spec, samp_probs, speaker_signals_gt):
 	]
 	speaker_sources_pred = [
 		sources[angle]
-		for angle in speaker_angles(sources)
+		for angle in SeparatedSource.speaker_angles(sources)
 	]
 	
+	def zipped_metrics(sources_pred, speakers_gt):
+		return torch.stack([
+			pred.metrics(gt)
+			for pred, gt in zip(sources_pred, speakers_gt)
+		])
+	
 	possible_metrics = [
-		zip_metrics(speaker_sources_pred, speaker_signals_gt),
-		zip_metrics(speaker_sources_pred[::-1], speaker_signals_gt)
+		zipped_metrics(speaker_sources_pred, speaker_signals_gt),
+		zipped_metrics(speaker_sources_pred[::-1], speaker_signals_gt)
 	]
 	best_metrics = max(possible_metrics, key=torch.prod)
 	return best_metrics
 
 
 def separated_batch_metrics(batch):
-	"""Returns a tensor with
-	shape=(batch_size, speaker_num, sdr_or_sir).
+	"""Returns a tensor with shape=
+	(batch_size, speaker_num, sdr_or_sir).
 	"""
 	samples = zip(
 		batch['ref_stft'],
@@ -163,17 +166,17 @@ def separated_batch_metrics(batch):
 
 
 def mixed_batch_metrics(batch):
-	"""Returns a tensor with
-	shape=(batch_size, speaker_num, sdr_or_sir).
+	"""Returns a tensor with shape=
+	(batch_size, speaker_num, sdr_or_sir).
 	"""
-	# Flatted axes 0, 1:[smp0spk0, smp0spk1, smp1spk0, smp1spk1...]
+	# Flatted axes 0, 1:[samp0spk0, samp0spk1, samp1spk0, samp1spk1...]
 	refs = batch['perceived_signals']
 	refs = refs.view(-1, refs.shape[-1])
 	
 	# Repeat signals twice [mixed0, mixed0, mixed1, mixed1...]
 	ests = batch['mixed_signals'].repeat_interleave(2, dim=0)
 	
-	# Convert back to indexing by [smp_num, speaker_num, t]
+	# Convert back to indexing by [samp_num, speaker_num, sdr_or_sir]
 	return bss_eval(ref=refs, est=ests).view(-1, 2, 2)
 
 
@@ -182,42 +185,42 @@ def print_batch_metrics(batch, verbose=False):
 	speaker. if verbose=True, prints the metrics of each samples as
 	well,
 	"""
-	SAMP_TITLE = "[ SAMPLE{:5d} ]======[ SDR ]=====[ SIR ]===================="
-	AVG_TITLE  = "[ BATCH AVG ]========[ SDR ]=====[ SIR ]===================="
-	TEMPLATE   = "Speaker{:5d}:        {:7.3f}     {:7.3f}"
+	SAMP_TITLE = "[ SAMPLE {:<5}]======[ SDR ]=====[ SIR ]===================="
+	AVG_TITLE  = "[  BATCH AVG  ]======[ SDR ]=====[ SIR ]===================="
+	TEMPLATE   = "Speaker {:<5}        {:7.3f}     {:7.3f}"
 	
 	batch_mix = mixed_batch_metrics(batch)
 	batch_sep = separated_batch_metrics(batch)
 	
-	def print_metrics(mixed_metrics, separated_metrics, title):
-		print(title)
-		
+	def print_metrics(mix_metrics, sep_metrics):
 		print("MIXED SIGNALS")
-		for speaker_num, metrics in enumerate(mixed_metrics):
-			print(TEMPLATE.format(speaker_num, *metrics))
+		print(TEMPLATE.format(0, *mix_metrics[0]))
+		print(TEMPLATE.format(1, *mix_metrics[1]))
 		
 		print("SEPARATED SIGNALS")
-		for speaker_num, metrics in enumerate(separated_metrics):
-			print(TEMPLATE.format(speaker_num, *metrics))
-	
+		print(TEMPLATE.format(0, *sep_metrics[0]))
+		print(TEMPLATE.format(1, *sep_metrics[1]))
+		
 	if verbose:
-		samp_num = 0
-		for mix, sep in zip(batch_mix, batch_sep):
-			print_metrics(mix, sep, SAMP_TITLE.format(samp_num))
+		for samp_num, (mix, sep) in enumerate(zip(batch_mix, batch_sep)):
+			print(SAMP_TITLE.format(samp_num))
+			print_metrics(mix, sep)
 			print()
-			samp_num += 1
 		print('\n')
 	
 	avg_mix = batch_mix.mean(dim=0)
 	avg_sep = batch_sep.mean(dim=0)
-	print_metrics(avg_mix, avg_sep, AVG_TITLE)
+	print(AVG_TITLE)
+	print_metrics(avg_mix, avg_sep)
 
 
 if __name__ == '__main__':
 	batch = torch.load('example_batch2.pt')
+	batch['mixed_signals'] = batch['perceived_signals'][:, 0]
 	
-	refs = batch['perceived_signals']
-	refs = refs.view(-1, refs.shape[-1])
-	batch['mixed_signals'] = refs[::2]
+	batch = {
+		key: torch.cat([val, val], dim=0)
+		for key, val in batch.items()
+	}
 	
 	print_batch_metrics(batch, verbose=False)
