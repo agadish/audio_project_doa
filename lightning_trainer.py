@@ -70,7 +70,12 @@ class UnetDACLighting(L.LightningModule):
         batch_sep = separated_batch_metrics(batch_dict)
         avg_mix = batch_mix.mean(dim=0)
         avg_sep = batch_sep.mean(dim=0)
-        self.log('avg_mix', avg_mix, prog_bar=True, on_step=True, on_epoch=True)
-        self.log('avg_sep', avg_sep, prog_bar=True, on_step=True, on_epoch=True)
+        for i in range(avg_mix.size(0)):
+            for j in range(avg_mix.size(1)):
+                self.log(f'avg_mix_{i}_{j}', avg_mix[i, j].item(), prog_bar=True, on_step=True, on_epoch=True)
+
+        for i in range(avg_sep.size(0)):
+            for j in range(avg_sep.size(1)):
+                self.log(f'avg_sep_{i}_{j}', avg_sep[i, j].item(), prog_bar=True, on_step=True, on_epoch=True)
         
         return {'avg_mix': avg_mix, 'avg_sep': avg_sep}
