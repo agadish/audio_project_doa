@@ -61,8 +61,8 @@ class SeparatedSource:
 		# The model's output for this angle, shape=(w, t)
 		self.probs = probs
 	
-	def energy(self):
-		return torch.sum(self.probs * abs(self.ref_spec) ** 2)
+	def energy(self) -> float:
+		return torch.sum(self.probs * abs(self.ref_spec) ** 2).item()
 	
 	def spec(self):
 		mag = abs(self.ref_spec) * self.probs
@@ -74,7 +74,8 @@ class SeparatedSource:
 		
 		spec_with_dc = torch.empty(
 			(spec.shape[0] + 1, spec.shape[1]),
-			dtype=torch.complex64
+			dtype=torch.complex64,
+			device=config.DEVICE
 		)
 		spec_with_dc[0] = 0
 		spec_with_dc[1:] = spec
@@ -90,8 +91,8 @@ class SeparatedSource:
 		speaker_signal = istft(speaker_spec)
 		
 		# Reshape (siglen,) -> (n_src=1, siglen)
-		ref = speaker_signal.unsqueeze(0).detach().cpu().numpy()
-		est = self.signal().unsqueeze(0).detach().cpu().numpy()
+		ref = speaker_signal.unsqueeze(0)
+		est = self.signal().unsqueeze(0)
 		
 		# Reshape result (n_src=1, SDR_or_SIR=2) -> (SDR_or_SIR=2,)
 		return bss_eval(ref, est).squeeze(0)
@@ -107,6 +108,21 @@ class SeparatedSource:
 		max_angles = tuple(partitioned[-2:])
 		return max_angles
 	
+	@classmethod
+	def speakers(cls, ref_spec, samp_probs):
+		# `samp_probs`'s shape is (angle_count, w, t).
+		# `sources[i]` is the separeted source coming from the direction
+		# theta_i.
+		sources = [
+			cls(ref_spec, probs)
+			for probs in samp_probs
+		]
+		
+		return [
+			sources[angle]
+			for angle in cls.speaker_angles(sources)
+		]
+
 	def save(self, path):
 		save(
 			uri=path,
@@ -119,29 +135,20 @@ def separated_sample_metrics(ref_spec, samp_probs, speaker_signals_gt):
 	"""Retuns the metrics for both speakers of this sample, as a tensor
 	with shape=(speaker_num, sdr_or_sir)
 	"""
-	# `samp_probs`'s shape is (angle_count, w, t).
-	# `sources[i]` is the separeted source coming from the direction
-	# theta_i.
-	sources = [
-		SeparatedSource(ref_spec, probs)
-		for probs in samp_probs
-	]
-	speaker_sources_pred = [
-		sources[angle]
-		for angle in SeparatedSource.speaker_angles(sources)
-	]
-	
 	def zipped_metrics(sources_pred, speakers_gt):
 		return torch.stack([
 			pred.metrics(gt)
 			for pred, gt in zip(sources_pred, speakers_gt)
-		])
+		]).to(config.DEVICE)
+	
+	speaker_sources_pred = SeparatedSource.speakers(ref_spec, samp_probs)
 	
 	possible_metrics = [
 		zipped_metrics(speaker_sources_pred, speaker_signals_gt),
 		zipped_metrics(speaker_sources_pred[::-1], speaker_signals_gt)
 	]
 	best_metrics = max(possible_metrics, key=torch.prod)
+	
 	return best_metrics
 
 
@@ -174,7 +181,7 @@ def mixed_batch_metrics(batch):
 	refs = refs.view(-1, refs.shape[-1])
 	
 	# Repeat signals twice [mixed0, mixed0, mixed1, mixed1...]
-	ests = batch['mixed_signals'].repeat_interleave(2, dim=0)
+	ests = batch['mixed_signals'][:, 0].repeat_interleave(2, dim=0)
 	
 	# Convert back to indexing by [samp_num, speaker_num, sdr_or_sir]
 	return bss_eval(ref=refs, est=ests).view(-1, 2, 2)
@@ -214,13 +221,28 @@ def print_batch_metrics(batch, verbose=False):
 	print_metrics(avg_mix, avg_sep)
 
 
+def batch_speaker_signals(batch):
+	"""Returns a tensor with shape=(batch_size, speaker_num, siglen)."""
+	batch_speakers = torch.stack([
+		torch.stack([
+			speaker.signal()
+			for speaker in SeparatedSource.speakers(ref_spec[1:], samp_probs)
+		]) 
+		for ref_spec, samp_probs in zip(batch['ref_stft'], batch['probs'])
+	])
+
+
 if __name__ == '__main__':
-	batch = torch.load('example_batch2.pt')
-	batch['mixed_signals'] = batch['perceived_signals'][:, 0]
+	# batch = torch.load('samples_test1605.pt', map_location=torch.device('cpu'))
+	# batch['mixed_signals'] = batch['perceived_signals'][:, 0]
 	
 	batch = {
-		key: torch.cat([val, val], dim=0)
-		for key, val in batch.items()
+		'ref_stft': torch.rand((3, 257, 1280)),
+		'mixed_signals': torch.rand((3, 8, 163760)),
+		'perceived_signals': torch.rand((3, 2, 163760)),
+		'probs': torch.rand((3, 13, 256, 1280)),
 	}
+	for key, val in batch.items():
+		print(f"{key:<20}{tuple(val.shape)}")
 	
-	print_batch_metrics(batch, verbose=False)
+	print_batch_metrics(batch, verbose=True)
