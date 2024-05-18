@@ -42,7 +42,7 @@ def load_source_signals(source_dir='source_signals/LibriSpeech/dev-clean', batch
     logger.debug(f"Found num_speakers={num_speakers}")
 
     # Initialize list to store source signals%
-    batch_signals = []
+    all_signals = []
 
     # Iterate over batch size
     total_wav_len = 0.0
@@ -92,11 +92,12 @@ def load_source_signals(source_dir='source_signals/LibriSpeech/dev-clean', batch
             speaker_signals.append(waveform)
 
         # Stack signals for each speaker along the second dimension
-        batch_signals.append(torch.stack(speaker_signals))
+        all_signals.append(torch.stack(speaker_signals))
 
     logger.debug(f"Average wav len: {total_wav_len / (batch_size * 2):.2g} [sec]")
     # Stack signals for each sample along the first dimension
-    batch_signals = torch.stack(batch_signals).squeeze(dim=2)
+    batch_signals = torch.stack(all_signals)
+    batch_signals = batch_signals.squeeze(dim=2)
 
     # If Normalize is True, normalize each signal to zero mean and unit variance
     if normalize:
@@ -137,7 +138,7 @@ def generate_coords(num_scenarios, radii, variance):
         radii_tensor = torch.tensor([radii[i % len(radii)] for i in range(num_scenarios)], dtype=torch.float32, device=device)
 
     # Perturb radius with Gaussian noise
-    radii_perturbed = radii_tensor.unsqueeze(1) + torch.randn(num_scenarios, 2, device=device) * variance
+    radii_perturbed = radii_tensor.unsqueeze(1) + torch.randn(num_scenarios, 2, device=device) * (variance ** 0.5)
 
     # Calculate x and y coordinates for each sample
     x_coords = radii_perturbed * torch.cos(angles_rad) + MIC_ARRAY_CENTER[0]
@@ -257,28 +258,31 @@ def mix_rirs(perceived_signals, interfere=True):
     :param perceived_signals: Tensor of pairs of signals perceived at different mics.
            shape: (num_scenarios, 2, NUM_MICS, conv_len)
     :param interfere: If true, mixes perceived pairs with random sirs in [TRAIN_SIR_LOW, TRAIN_SIR_HIGH]
-    :output: Tensor of shape (num_scenarios, NUM_MICS, conv_len)
+    :output: Tuple of:
+        - Tensor of shape (num_scenarios, NUM_MICS, conv_len)
+        - SIR factors (num_scenarios, 1)
     """
     num_scenarios, _, _, conv_len = perceived_signals.size()
 
     # Generate random SIRs if interference is required
     if interfere:
         # Generate random SIRs for each scenario and mic within the specified range
-        sirs = torch.rand(num_scenarios, NUM_MICS, device=device) * (TRAIN_SIR_HIGH - TRAIN_SIR_LOW) + TRAIN_SIR_LOW
+        sir_factors = torch.rand((num_scenarios, 1)) * (TRAIN_SIR_HIGH - TRAIN_SIR_LOW) + TRAIN_SIR_LOW
 
         # Ensure that SIRs are in the correct range and convert to linear scale
-        sirs = torch.pow(10, sirs.float() / 10)
-
+        sir_factors = torch.pow(10, sir_factors / 10)
+        
         # Expand dimensions for broadcasting
-        sirs = sirs.unsqueeze(2)
+        sir_factors = sir_factors.unsqueeze(2)
 
         # Mix the signals with interference
-        mixed_signals = perceived_signals[:, 0, :, :] + perceived_signals[:, 1, :, :] / sirs
+        mixed_signals = perceived_signals[:, 0, :, :] + perceived_signals[:, 1, :, :] / sir_factors
     else:
         # Mix the signals without interference
         mixed_signals = perceived_signals.sum(dim=1)  # Sum the signals from both speakers
+        sir_factors = torch.ones((num_scenarios, 1))
 
-    return mixed_signals
+    return mixed_signals, sir_factors
 
 
 def calculate_rtf(mic_signals, discard_dc=True):
@@ -566,7 +570,9 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
 
     # Mix pairs with no interference
     logger.debug('Mixing rirs...')
-    mixed_signals = mix_rirs(perceived_signals=perceived_signals, interfere=False)
+    should_interfere = not test
+    mixed_signals, sir_factors = mix_rirs(perceived_signals=perceived_signals, interfere=should_interfere)
+    perceived_signals[:, 1, :, :] *= sir_factors
 
     # Calculate RTFs and reference microphone magnitude tensor
     logger.debug('Calculatign RTF...')
@@ -638,7 +644,7 @@ def main():
         existing_train_batches = 0
         with tqdm(total=args.train_num_batches, desc='Creating train batches') as pb:
             for i in range(args.train_num_batches):
-                output_path = os.path.join(args.output_dir, f'train06r076_{i}.pt')
+                output_path = os.path.join(args.output_dir, f'train06r076v2tmp_{i}.pt')
                 if not args.force_rewrite and Path(output_path).exists():
                     logger.debug(f'Skipping {output_path} - already exists')
                     existing_train_batches += 1
@@ -664,7 +670,7 @@ def main():
         existing_validation_batches = 0
         with tqdm(total=args.validation_num_batches, desc='Creating validation batches') as pb:
             for i in range(args.validation_num_batches):
-                output_path = os.path.join(args.output_dir, f'validation06r076_{i}.pt')
+                output_path = os.path.join(args.output_dir, f'validation06r076v2_{i}.pt')
                 if not args.force_rewrite and Path(output_path).exists():
                     logger.debug(f'Skipping {output_path} - already exists')
                     existing_validation_batches += 1
