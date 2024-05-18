@@ -184,7 +184,9 @@ def mixed_batch_metrics(batch):
 	ests = batch['mixed_signals'][:, 0].repeat_interleave(2, dim=0)
 	
 	# Convert back to indexing by [samp_num, speaker_num, sdr_or_sir]
-	return bss_eval(ref=refs, est=ests).view(-1, 2, 2)
+	result = bss_eval(ref=refs, est=ests)
+	result = result.view(-1, 2, 2)
+	return result
 
 
 def print_batch_metrics(batch, verbose=False):
