@@ -6,13 +6,28 @@ import numpy as np
 
 import config
 
-try:
-	# pip install git+https://github.com/sigsep/bsseval@92535ea70e5c0864286ee5f0c5a4fa762de98546
-	import bsseval
-except ImportError:
-	import sys
-	sys.path.insert(0, 'bsseval-master')
-	import bsseval
+
+FAST_BSS_EVAL = True
+
+
+if FAST_BSS_EVAL:
+	try:
+		# pip install git+https://github.com/sigsep/bsseval@92535ea70e5c0864286ee5f0c5a4fa762de98546
+		import fast_bss_eval
+	except ImportError:
+		import sys
+		sys.path.insert(0, 'fast_bss_eval-main')
+		import fast_bss_eval
+
+else:
+	try:
+		# pip install git+https://github.com/sigsep/bsseval@92535ea70e5c0864286ee5f0c5a4fa762de98546
+		import bsseval
+	except ImportError:
+		import sys
+		sys.path.insert(0, 'bsseval-master')
+		import bsseval
+
 
 
 stft = Spectrogram(
@@ -36,17 +51,37 @@ def bss_eval(ref, est):
 	est.shape = (n_src, est_signal_len)
 	return.shape = (n_src, SDR_or_SIR=2)
 	"""
-	sdr, isr, sir, sar = bsseval.evaluate(
-		references=ref.unsqueeze(-1).detach().cpu().numpy(),
-		estimates=est.unsqueeze(-1).detach().cpu().numpy(),
-		# win=1*44100,
-		# hop=1*44100,
-		# mode='v4',
-		# padding=True
-	)
-	avg_sdr = torch.tensor(np.mean(sdr, axis=1))
-	avg_sir = torch.tensor(np.mean(sir, axis=1))
+	
+	if FAST_BSS_EVAL:
+		sdr, sir, sar = fast_bss_eval.bss_eval_sources(
+			ref=ref.unsqueeze(-2),
+			est=est.unsqueeze(-2),
+			# filter_length: Optional[int] = 512,
+			# use_cg_iter: Optional[int] = None,
+			# zero_mean: Optional[bool] = False,
+			# clamp_db: Optional[float] = None,
+			compute_permutation=False,
+			# load_diag: Optional[float] = None,
+		)
+		
+		avg_sdr = sdr.squeeze(-1)
+		avg_sir = sir.squeeze(-1)
+	
+	else:
+		sdr, isr, sir, sar = bsseval.evaluate(
+			references=ref.unsqueeze(-1).detach().cpu().numpy(),
+			estimates=est.unsqueeze(-1).detach().cpu().numpy(),
+			# win=1*44100,
+			# hop=1*44100,
+			# mode='v4',
+			# padding=True
+		)
+		
+		avg_sdr = torch.tensor(np.mean(sdr, axis=1))
+		avg_sir = torch.tensor(np.mean(sir, axis=1))
+	
 	return torch.stack((avg_sdr, avg_sir), dim=1)
+
 
 
 

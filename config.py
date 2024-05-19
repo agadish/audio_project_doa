@@ -12,7 +12,7 @@ FRAME_LENGTH = 512 # K
 NUMBER_OF_FRAMES = 96 # L
 
 NUM_MICS = 8  # Number of microphones
-L = (6.0, 6.0, 2.4)  # Room dimensions [x y z] (m)
+ROOM_DIMENSIONS = (6.0, 6.0, 2.4)  # Room dimensions [x y z] (m)
 MIC_ARRAY_POS = ((2.87, 1.0, 1.5), (2.9, 1.0, 1.5), (2.93, 1.0, 1.5), (2.96, 1.0, 1.5),
                  (3.04, 1.0, 1.5), (3.07, 1.0, 1.5), (3.1, 1.0, 1.5), (3.13, 1.0, 1.5))  # Mics' positions
 MIC_ARRAY_CENTER = (3.0, 1.0, 1.5)
@@ -21,7 +21,7 @@ ANGLE_RES = 15  # Circular source setup's angle resolution [deg]
 ANGLE_LOW = 0  # Circular source setup's lowest possible angle [deg]
 ANGLE_HIGH = 180  # Circular source setup's highest possible angle [deg]
 NUM_CLASSES = ((ANGLE_HIGH - ANGLE_LOW) // ANGLE_RES) + 1
-SPEAKER_HEIGHT = torch.tensor(1.75)  # Height of each sound source [m]
+SPEAKER_HEIGHT = MIC_ARRAY_CENTER[2] #torch.tensor(1.75)  # Height of each sound source [m]
 EPS = 1e-9  # Epsilon to avoid 0 values in numerical calculations
 
 ENABLE_HPF = True  # Enable HPF for RIRs

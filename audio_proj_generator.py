@@ -17,9 +17,10 @@ from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
 from tqdm import tqdm
 import argparse
+import joblib
 
 
-from config import ANGLE_HIGH, ANGLE_LOW, ANGLE_RES, C, DIM, ENABLE_HPF, EPS, HOP_LENGTH, MIC_ARRAY_CENTER, MIC_ARRAY_POS, MTYPE, NFFT, NSAMPLE, NUM_MICS, ORDER, ORIENTATION, SIGNAL_LEN, SPEAKER_HEIGHT, TEST_RADII, TEST_REVERB_TIMES, TRAIN_RAD_MEAN, TRAIN_RAD_VAR, TRAIN_REVERB_TIMES, TRAIN_SIR_HIGH, TRAIN_SIR_LOW, FS, L, MAX_WORKERS, REVERB_TAIL_LENGTH, SHOULD_REVERSE_MICROPHONES
+from config import ANGLE_HIGH, ANGLE_LOW, ANGLE_RES, C, DIM, ENABLE_HPF, EPS, HOP_LENGTH, MIC_ARRAY_CENTER, MIC_ARRAY_POS, MTYPE, NFFT, NSAMPLE, NUM_MICS, ORDER, ORIENTATION, SIGNAL_LEN, SPEAKER_HEIGHT, TEST_RADII, TEST_REVERB_TIMES, TRAIN_RAD_MEAN, TRAIN_RAD_VAR, TRAIN_REVERB_TIMES, TRAIN_SIR_HIGH, TRAIN_SIR_LOW, FS, ROOM_DIMENSIONS, MAX_WORKERS, REVERB_TAIL_LENGTH, SHOULD_REVERSE_MICROPHONES
 
 
 device = "cpu" # torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -161,7 +162,7 @@ def generate_rir(source_position: torch.tensor, reverb_time: torch.tensor) -> to
         fs=FS,  # Sample frequency (samples/s)
         r=MIC_ARRAY_POS,  # Receiver position(s) [x y z] (m)
         s=source_position.cpu().numpy(),  # Source position [x y z] (m)
-        L=L,  # Room dimensions [x y z] (m)
+        L=ROOM_DIMENSIONS,  # Room dimensions [x y z] (m)
         reverberation_time=reverb_time.cpu().numpy(),  # Reverberation time (s)
         nsample=NSAMPLE,  # Number of output samples
         mtype=MTYPE,  # Microphone type
@@ -174,7 +175,7 @@ def generate_rir(source_position: torch.tensor, reverb_time: torch.tensor) -> to
     return torch.tensor(result_rirs, device=device)
 
 
-def generate_rir_batch(source_positions, reverb_times):
+def generate_rir_batch(source_positions, reverb_times, batch_index, cache_dir=None):
     """
     For each scenario, generates pairs of RIRs of all microphones, for a given source position and reverb time.
     :param source_positions: Tensor of source positions of shape (num_scenarios, 2, 2)
@@ -199,6 +200,7 @@ def generate_rir_batch(source_positions, reverb_times):
     #     for speaker_idx in range(2):
     #         rirs[scenario_idx, speaker_idx] = generate_rir(
     #             source_positions[scenario_idx, speaker_idx], reverb_times[reverb_idx])
+
     
     with tqdm(total=num_scenarios * 2, desc='Generating Room Impulse Response') as progress_bar:
         with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -518,7 +520,8 @@ def generate_coords_rirs_test(num_scenarios: int, allowed_radii: Tuple[float], r
 
 def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSpeech/dev-clean',
                    normalize=True, discard_dc=True, signal_length=SIGNAL_LEN, signal_fs=FS,
-                   reverb_tail_length=REVERB_TAIL_LENGTH) -> Dict[str, torch.tensor]:
+                   reverb_tail_length=REVERB_TAIL_LENGTH, batch_index=-1,
+                   rir_cache_dir=None) -> Dict[str, torch.tensor]:
     """
     Generates a batch for the neural network.
     :param test: If True, generates a batch for test set, otherwise for training set.
@@ -539,14 +542,20 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
     # If training batch, generate scenarios
     if not test:
         # Generate (x, y) positions for speakers
-        logger.debug('Batch type is training')
-        logger.debug('Generating coords...')
-        source_positions, doas = generate_coords(num_scenarios=batch_size,
-                                                 radii=torch.tensor(TRAIN_RAD_MEAN, device=device), variance=TRAIN_RAD_VAR)
+        cache_path = Path(rir_cache_dir).joinpath(f"batch_{batch_index}.pt")
+        if cache_path.exists():
+            logger.debug(f'Found cache file type {cache_path}')
+            source_positions, doas, rirs = torch.load(cache_path)
+        else:
+            logger.debug('Batch type is training')
+            logger.debug('Generating coords...')
+            source_positions, doas = generate_coords(num_scenarios=batch_size,
+                                                    radii=torch.tensor(TRAIN_RAD_MEAN, device=device), variance=TRAIN_RAD_VAR)
 
-        # Generate RIRs
-        logger.debug('Generating rir...')
-        rirs = generate_rir_batch(source_positions=source_positions, reverb_times=TRAIN_REVERB_TIMES)
+            # Generate RIRs
+            logger.debug('Generating rir...')
+            rirs = generate_rir_batch(source_positions=source_positions, reverb_times=TRAIN_REVERB_TIMES, batch_index=batch_index, cache_dir=rir_cache_dir)
+            torch.save((source_positions, doas, rirs), cache_path)
     # If test batch, use scenarios given in the real RIRs
     else:
         # Generate (x, y) positions for speakers
@@ -622,7 +631,7 @@ def parse_args():
     parser.add_argument("--reverb-tail-test", type=int, default=int(FS*0.235), help="Length of reverb tail for perceived test signals")
 
     parser.add_argument("-o", "--output-dir", type=str, default='data_batches', help='Output directory for data batches')
-    parser.add_argument("-f", "--force-rewrite", type=bool, default=False, help='Overwrite existing data')
+    parser.add_argument("-f", "--force-rewrite", type=bool, default=True, help='Overwrite existing data')
 
     args = parser.parse_args()
     return args
@@ -653,7 +662,7 @@ def main():
                 
                 while True:
                     data = generate_batch(batch_size=args.train_batch_size, source_dir=args.input_train, signal_length=int(args.signal_length_train),
-                                        reverb_tail_length=args.reverb_tail_train)
+                                        reverb_tail_length=args.reverb_tail_train, batch_index=i, rir_cache_dir='rir_cache_train')
                     # RIR generator may fail - retry
                     if not torch.any(torch.isnan(data['samples'])):
                         break
@@ -679,7 +688,7 @@ def main():
                 
                 while True:
                     data = generate_batch(batch_size=args.validation_batch_size, source_dir=args.input_validation, signal_length=int(args.signal_length_validation),
-                                        reverb_tail_length=args.reverb_tail_validation)
+                                        reverb_tail_length=args.reverb_tail_validation, batch_index=i, rir_cache_dir='rir_cache_val')
                     # RIR generator may fail - retry
                     if not torch.any(torch.isnan(data['samples'])):
                         break
