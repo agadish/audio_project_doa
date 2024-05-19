@@ -124,9 +124,11 @@ def generate_coords(num_scenarios, radii, variance):
     - DOAs (torch.Tensor): Tensor of shape (num_scenarios, 2) containing pairs of DOAs.
     """
 
-    # Generate random angles
-    angles = torch.randint(ANGLE_LOW, int((ANGLE_HIGH - ANGLE_LOW) / ANGLE_RES) + 1,
-                           size=(num_scenarios, 2), device=device) * ANGLE_RES
+    # Generate random angles without repetition
+    angles = torch.stack([torch.tensor(np.random.choice(range(ANGLE_LOW, ANGLE_HIGH + ANGLE_RES, ANGLE_RES), 2, replace=False))
+                         for _ in range(num_scenarios)])
+    # angles = torch.randint(ANGLE_LOW, int((ANGLE_HIGH - ANGLE_LOW) / ANGLE_RES) + 1,
+                        #    size=(num_scenarios, 2), device=device) * ANGLE_RES
 
     # Convert angles to radians
     angles_rad = angles.float() * (torch.pi / 180.0)
