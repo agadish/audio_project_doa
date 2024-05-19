@@ -143,9 +143,9 @@ def generate_coords(num_scenarios, radii, variance):
     # Perturb radius with Gaussian noise
     radii_perturbed = radii_tensor.unsqueeze(1) + torch.randn(num_scenarios, 2, device=device) * (variance ** 0.5)
 
-    # Calculate x and y coordinates for each sample
-    x_coords = radii_perturbed * torch.cos(angles_rad) + MIC_ARRAY_CENTER[0]
-    y_coords = radii_perturbed * torch.sin(angles_rad) + MIC_ARRAY_CENTER[1]
+    # Calculate x and y coordinates for each sample - clip with room dimensions
+    x_coords = torch.clip(radii_perturbed * torch.cos(angles_rad) + MIC_ARRAY_CENTER[0], 0, ROOM_DIMENSIONS[0])
+    y_coords = torch.clip(radii_perturbed * torch.sin(angles_rad) + MIC_ARRAY_CENTER[1], 0, ROOM_DIMENSIONS[1])
 
     coordinates = (torch.stack((x_coords, y_coords), dim=-1)).to(device)
 
@@ -544,8 +544,9 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
     # If training batch, generate scenarios
     if not test:
         # Generate (x, y) positions for speakers
-        cache_path = Path(rir_cache_dir).joinpath(f"batch_{batch_index}.pt")
-        if cache_path.exists():
+        if rir_cache_dir:
+            cache_path = Path(rir_cache_dir).joinpath(f"batch_{batch_index}.pt")
+        if rir_cache_dir and cache_path.exists():
             logger.debug(f'Found cache file type {cache_path}')
             source_positions, doas, rirs = torch.load(cache_path)
         else:
@@ -557,7 +558,8 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
             # Generate RIRs
             logger.debug('Generating rir...')
             rirs = generate_rir_batch(source_positions=source_positions, reverb_times=TRAIN_REVERB_TIMES, batch_index=batch_index, cache_dir=rir_cache_dir)
-            torch.save((source_positions, doas, rirs), cache_path)
+            if rir_cache_dir:
+                torch.save((source_positions, doas, rirs), cache_path)
     # If test batch, use scenarios given in the real RIRs
     else:
         # Generate (x, y) positions for speakers
@@ -617,8 +619,8 @@ def parse_args():
     parser.add_argument("--input-train", type=str, default='source_signals/LibriSpeech/train-clean-100', help='Data directory or train')
     parser.add_argument("--train-batch-size", type=int, default=64, help="Batch size for train batches")
     parser.add_argument("--train-num-batches", type=int, default=94, help="Number of train batches")
-    parser.add_argument("--signal-length-train", type=int, default=int(FS*0.6), help='Signal length on train')
-    parser.add_argument("--reverb-tail-train", type=int, default=int(FS*0.16), help="Length of reverb tail for perceived train signals")
+    parser.add_argument("--signal-length-train", type=int, default=int(FS*5.6), help='Signal length on train')
+    parser.add_argument("--reverb-tail-train", type=int, default=int(FS*0.7), help="Length of reverb tail for perceived train signals")
 
     parser.add_argument("--input-validation", type=str, default='source_signals/LibriSpeech/train-clean-100', help='Data directory or validation')
     parser.add_argument("--validation-batch-size", type=int, default=64, help="Batch size for validation batches")
@@ -664,7 +666,7 @@ def main():
                 
                 while True:
                     data = generate_batch(batch_size=args.train_batch_size, source_dir=args.input_train, signal_length=int(args.signal_length_train),
-                                        reverb_tail_length=args.reverb_tail_train, batch_index=i, rir_cache_dir='rir_cache_train')
+                                        reverb_tail_length=args.reverb_tail_train, batch_index=i)#, rir_cache_dir='rir_cache_train')
                     # RIR generator may fail - retry
                     if not torch.any(torch.isnan(data['samples'])):
                         break

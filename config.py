@@ -6,7 +6,7 @@ import rir_generator as rir
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 C = 343  # Sound velocity
 FS = int(16e3)  # Sample rate [KHz]
-SIGNAL_LEN_SECS = 0.9  # Fixed length of audio signals [s]
+SIGNAL_LEN_SECS = 0.6  # Fixed length of audio signals [s]
 SIGNAL_LEN = int(SIGNAL_LEN_SECS * FS)  # Fixed length of audio signals [samples]
 FRAME_LENGTH = 512 # K
 NUMBER_OF_FRAMES = 96 # L
