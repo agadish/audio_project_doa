@@ -1,9 +1,8 @@
 Advanced Topics in Audio Processing using Deep Learning
 Final Project - HOWTO
-Assaf Gadish - 206017899      Tomer Lerman - 318672367      Dor Siman Tov - 318869997
-
-Implemented Paper:
-Multi-Microphone Speaker Separation based on Deep DOA Estimation (Chazan et al.)
+* Students: Assaf Gadish      Tomer Lerman      Dor Siman Tov
+* Github URL: https://github.com/agadish/audio_project_doa/
+* Implemented Paper: Multi-Microphone Speaker Separation based on Deep DOA Estimation (Chazan et al.)
 
 -----------------------------------------
 | Hardware requirements
