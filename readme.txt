@@ -15,12 +15,16 @@ GPU with dedicated 14GB RAM may significantly help (for --batch-size=64)
 -----------------------------------------
 | Data generation
 -----------------------------------------
-1. In the directory "source_signal", download and extract the following datasets:
-  a)
-  b)
+1. In the directory "source_signal", download and extract the following datasets (expected structure: source_signal/LibriSpeech/train-clean-100, ...)
+  a) LibriSpeech train-clean:
+     https://www.openslr.org/resources/12/train-clean-100.tar.gz
+  b) LibriSpeech test-other:
+     https://www.openslr.org/resources/12/test-other.tar.gz
 2. In the directory "timit_rir", download and extract the following rir responses:
-  a)
-  b)
+  a) Impulse_response_Acoustic_Lab_Bar-Ilan_University_(Reverberation_0.160s)_3-3-3-8-3-3-3.zip:
+    https://drive.google.com/file/d/1THNdtrzy9WCIUZfjj5aIWXUYg8g9Eesy/view?usp=drive_link
+  b) Impulse_response_Acoustic_Lab_Bar-Ilan_University_(Reverberation_0.360s)_3-3-3-8-3-3-3.zip:
+     https://drive.google.com/file/d/1Bc97XSIebnsdCnQQzctqRcEmh74uBUcE/view?usp=drive_link
 
 3. Within the project main directory extract within your python 3.10 (that has requirements.txt installed):
    > python audio_proj_generator.py
