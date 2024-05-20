@@ -176,3 +176,4 @@ lightning_model
 lightning_logs
 tb_logs
 rir_cahce_*
+*.wav

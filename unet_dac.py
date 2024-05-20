@@ -15,7 +15,7 @@ class UnetDAC(nn.Module):
         self.input_shape = (L, K, 2 * (M - 1))
         self.dropout_probability = dropout_probability
         self.dropout = nn.Dropout(p=dropout_probability)
-        self.instancenorm2d = nn.BatchNorm2d(2 * (M - 1), affine=False)
+        self.instancenorm2d = nn.InstanceNorm2d(2 * (M - 1), affine=False)
 
         # Encoder
         # In the encoder, convolutional layers with the Conv2d function are used to extract features from the input image. 
@@ -146,7 +146,7 @@ class UnetDAC(nn.Module):
         # Output layer
         data = self.outconv(data)
 
-        data = F.softmax(data, dim=1) # dim=1 refers to the 13 microphones
+        # data = F.softmax(data, dim=1) # dim=1 refers to the 13 microphones
 
         return data
     

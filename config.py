@@ -16,6 +16,7 @@ ROOM_DIMENSIONS = (6.0, 6.0, 2.4)  # Room dimensions [x y z] (m)
 MIC_ARRAY_POS = ((2.87, 1.0, 1.5), (2.9, 1.0, 1.5), (2.93, 1.0, 1.5), (2.96, 1.0, 1.5),
                  (3.04, 1.0, 1.5), (3.07, 1.0, 1.5), (3.1, 1.0, 1.5), (3.13, 1.0, 1.5))  # Mics' positions
 MIC_ARRAY_CENTER = (3.0, 1.0, 1.5)
+SPEAKER_MIN_DISTANCE_FROM_WALL = 0.3 # 30 cm
 SHOULD_REVERSE_MICROPHONES = True
 ANGLE_RES = 15  # Circular source setup's angle resolution [deg]
 ANGLE_LOW = 0  # Circular source setup's lowest possible angle [deg]

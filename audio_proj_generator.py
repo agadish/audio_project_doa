@@ -20,7 +20,7 @@ import argparse
 import joblib
 
 
-from config import ANGLE_HIGH, ANGLE_LOW, ANGLE_RES, C, DIM, ENABLE_HPF, EPS, HOP_LENGTH, MIC_ARRAY_CENTER, MIC_ARRAY_POS, MTYPE, NFFT, NSAMPLE, NUM_MICS, ORDER, ORIENTATION, SIGNAL_LEN, SPEAKER_HEIGHT, TEST_RADII, TEST_REVERB_TIMES, TRAIN_RAD_MEAN, TRAIN_RAD_VAR, TRAIN_REVERB_TIMES, TRAIN_SIR_HIGH, TRAIN_SIR_LOW, FS, ROOM_DIMENSIONS, MAX_WORKERS, REVERB_TAIL_LENGTH, SHOULD_REVERSE_MICROPHONES
+from config import ANGLE_HIGH, ANGLE_LOW, ANGLE_RES, C, DIM, ENABLE_HPF, EPS, HOP_LENGTH, MIC_ARRAY_CENTER, MIC_ARRAY_POS, MTYPE, NFFT, NSAMPLE, NUM_MICS, ORDER, ORIENTATION, SIGNAL_LEN, SPEAKER_HEIGHT, TEST_RADII, TEST_REVERB_TIMES, TRAIN_RAD_MEAN, TRAIN_RAD_VAR, TRAIN_REVERB_TIMES, TRAIN_SIR_HIGH, TRAIN_SIR_LOW, FS, ROOM_DIMENSIONS, MAX_WORKERS, REVERB_TAIL_LENGTH, SHOULD_REVERSE_MICROPHONES, SPEAKER_MIN_DISTANCE_FROM_WALL
 
 
 device = "cpu" # torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -144,8 +144,12 @@ def generate_coords(num_scenarios, radii, variance):
     radii_perturbed = radii_tensor.unsqueeze(1) + torch.randn(num_scenarios, 2, device=device) * (variance ** 0.5)
 
     # Calculate x and y coordinates for each sample - clip with room dimensions
-    x_coords = torch.clip(radii_perturbed * torch.cos(angles_rad) + MIC_ARRAY_CENTER[0], 0, ROOM_DIMENSIONS[0])
-    y_coords = torch.clip(radii_perturbed * torch.sin(angles_rad) + MIC_ARRAY_CENTER[1], 0, ROOM_DIMENSIONS[1])
+    x_coords = torch.clip(radii_perturbed * torch.cos(angles_rad) + MIC_ARRAY_CENTER[0],
+                          SPEAKER_MIN_DISTANCE_FROM_WALL,
+                          ROOM_DIMENSIONS[0]- SPEAKER_MIN_DISTANCE_FROM_WALL)
+    y_coords = torch.clip(radii_perturbed * torch.sin(angles_rad) + MIC_ARRAY_CENTER[1],
+                          SPEAKER_MIN_DISTANCE_FROM_WALL,
+                          ROOM_DIMENSIONS[1] - SPEAKER_MIN_DISTANCE_FROM_WALL)
 
     coordinates = (torch.stack((x_coords, y_coords), dim=-1)).to(device)
 
@@ -153,7 +157,7 @@ def generate_coords(num_scenarios, radii, variance):
 
 
 def generate_rir(source_position: torch.tensor, reverb_time: torch.tensor) -> torch.tensor:
-    """
+    """ 
     Generates RIRs of all microphones, for a given source position (x, y) and reverb time.
     """
     # Concat speaker height to source position
@@ -226,7 +230,7 @@ def generate_rir_batch(source_positions, reverb_times, batch_index, cache_dir=No
                 rirs[r, c] = future.result()
                 progress_bar.update(1)
 
-    return rirs
+    return rirs # torch.Size([64, 2, 8, 5120])
 
 
 def conv_rirs(scenario_signals, rirs):
@@ -284,7 +288,7 @@ def mix_rirs(perceived_signals, interfere=True):
     else:
         # Mix the signals without interference
         mixed_signals = perceived_signals.sum(dim=1)  # Sum the signals from both speakers
-        sir_factors = torch.ones((num_scenarios, 1))
+        sir_factors = torch.ones((num_scenarios, 1, 1))
 
     return mixed_signals, sir_factors
 
@@ -545,10 +549,23 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
     if not test:
         # Generate (x, y) positions for speakers
         if rir_cache_dir:
+            Path(rir_cache_dir).mkdir(exist_ok=True)
             cache_path = Path(rir_cache_dir).joinpath(f"batch_{batch_index}.pt")
         if rir_cache_dir and cache_path.exists():
             logger.debug(f'Found cache file type {cache_path}')
             source_positions, doas, rirs = torch.load(cache_path)
+            x_coords = source_positions[:,:,0]
+            y_coords = source_positions[:,:,1]
+            x_coords_clip = torch.clip(x_coords, SPEAKER_MIN_DISTANCE_FROM_WALL, ROOM_DIMENSIONS[0]- SPEAKER_MIN_DISTANCE_FROM_WALL)
+            y_coords_clip = torch.clip(y_coords, SPEAKER_MIN_DISTANCE_FROM_WALL, ROOM_DIMENSIONS[0]- SPEAKER_MIN_DISTANCE_FROM_WALL)
+            if not torch.all(y_coords == y_coords_clip):
+                print('Dammmn error rir y coords')
+                cache_path.unlink()
+                return None
+            if not torch.all(x_coords == x_coords_clip):
+                print('Dammmn error rir x coords')
+                cache_path.unlink()
+                return None
         else:
             logger.debug('Batch type is training')
             logger.debug('Generating coords...')
@@ -597,8 +614,13 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
     
     if torch.any(torch.isnan(samples)):
         print("NANNNN DEBUG MEEE!")
-        import ipdb ; ipdb.set_trace()
+        # import ipdb ; ipdb.set_trace()
         print("NANNNN DEBUG MEEE!")
+        if rir_cache_dir:
+            # Remove cache
+            cache_path.unlink()
+
+        return None
 
     
     results = {'samples': samples.cpu().detach(),
@@ -619,23 +641,25 @@ def parse_args():
     parser.add_argument("--input-train", type=str, default='source_signals/LibriSpeech/train-clean-100', help='Data directory or train')
     parser.add_argument("--train-batch-size", type=int, default=64, help="Batch size for train batches")
     parser.add_argument("--train-num-batches", type=int, default=94, help="Number of train batches")
-    parser.add_argument("--signal-length-train", type=int, default=int(FS*5.6), help='Signal length on train')
-    parser.add_argument("--reverb-tail-train", type=int, default=int(FS*0.7), help="Length of reverb tail for perceived train signals")
+    parser.add_argument("--signal-length-train", type=int, default=int(FS*0.6), help='Signal length on train')
+    parser.add_argument("--reverb-tail-train", type=int, default=int(FS*0.16), help="Length of reverb tail for perceived train signals")
+    parser.add_argument("--rir-cache-dir-train", type=str, default=None,  help="Cache directory to save synthetic RIRs for the train nset, at or load from")
 
     parser.add_argument("--input-validation", type=str, default='source_signals/LibriSpeech/train-clean-100', help='Data directory or validation')
     parser.add_argument("--validation-batch-size", type=int, default=64, help="Batch size for validation batches")
     parser.add_argument("--validation-num-batches", type=int, default=8, help="Number of validation batches")
     parser.add_argument("--signal-length-validation", type=int, default=int(FS*0.6), help='Signal length on validation')
     parser.add_argument("--reverb-tail-validation", type=int, default=int(FS*0.16), help="Length of reverb tail for perceived validation signals")
+    parser.add_argument("--rir-cache-dir-validation", type=str, default='rir_cache_validation', help="Cache directory to save synthetic RIRs for the validation set, at or load from")
 
     parser.add_argument("--input-test", type=str, default='source_signals/LibriSpeech/test-other', help='Data directory of test')
     parser.add_argument("--test-batch-size", type=int, default=60, help="Batch size for test batches") # 30x2 = 60
     parser.add_argument("--test-num-batches", type=int, default=1, help="Number of test batches")
-    parser.add_argument("--signal-length-test", type=int, default=int(FS*10), help='Signal length on test')
-    parser.add_argument("--reverb-tail-test", type=int, default=int(FS*0.235), help="Length of reverb tail for perceived test signals")
+    parser.add_argument("--signal-length-test", type=int, default=int(FS*2), help='Signal length on test')
+    parser.add_argument("--reverb-tail-test", type=int, default=int(FS*0.16), help="Length of reverb tail for perceived test signals")
 
     parser.add_argument("-o", "--output-dir", type=str, default='data_batches', help='Output directory for data batches')
-    parser.add_argument("-f", "--force-rewrite", type=bool, default=True, help='Overwrite existing data')
+    parser.add_argument("-f", "--force-rewrite", type=bool, default=False, help='Overwrite existing data')
 
     args = parser.parse_args()
     return args
@@ -666,9 +690,9 @@ def main():
                 
                 while True:
                     data = generate_batch(batch_size=args.train_batch_size, source_dir=args.input_train, signal_length=int(args.signal_length_train),
-                                        reverb_tail_length=args.reverb_tail_train, batch_index=i)#, rir_cache_dir='rir_cache_train')
+                                        reverb_tail_length=args.reverb_tail_train, batch_index=i, rir_cache_dir=args.rir_cache_dir_train)
                     # RIR generator may fail - retry
-                    if not torch.any(torch.isnan(data['samples'])):
+                    if data and not torch.any(torch.isnan(data['samples'])):
                         break
 
                 with open(output_path, 'wb') as f:
@@ -683,7 +707,7 @@ def main():
         existing_validation_batches = 0
         with tqdm(total=args.validation_num_batches, desc='Creating validation batches') as pb:
             for i in range(args.validation_num_batches):
-                output_path = os.path.join(args.output_dir, f'validation06r076v2_{i}.pt')
+                output_path = os.path.join(args.output_dir, f'validation06r076v2tmp_{i}.pt')
                 if not args.force_rewrite and Path(output_path).exists():
                     logger.debug(f'Skipping {output_path} - already exists')
                     existing_validation_batches += 1
@@ -692,7 +716,7 @@ def main():
                 
                 while True:
                     data = generate_batch(batch_size=args.validation_batch_size, source_dir=args.input_validation, signal_length=int(args.signal_length_validation),
-                                        reverb_tail_length=args.reverb_tail_validation, batch_index=i, rir_cache_dir='rir_cache_val')
+                                        reverb_tail_length=args.reverb_tail_validation, batch_index=i, rir_cache_dir=args.rir_cache_dir_validation)
                     # RIR generator may fail - retry
                     if not torch.any(torch.isnan(data['samples'])):
                         break
@@ -710,7 +734,7 @@ def main():
         existing_test_batches = 0
         with tqdm(total=args.test_num_batches, desc='Creating test batches') as pb:
             for i in range(args.test_num_batches):
-                output_path = os.path.join(args.output_dir, f'test10r0235revrad_{i}.pt')
+                output_path = os.path.join(args.output_dir, f'test2r0.76v2tmp_{i}.pt')
                 if not args.force_rewrite and Path(output_path).exists():
                     logger.debug(f'Skipping test {i} - already exists')
                     existing_test_batches += 1

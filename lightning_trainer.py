@@ -1,5 +1,6 @@
 import lightning as L
 import torch
+import torch.nn.functional as F
 from config import ANGLE_RES
 from metrics import mixed_batch_metrics, separated_batch_metrics
 
@@ -14,7 +15,7 @@ class UnetDACLighting(L.LightningModule):
     def training_step(self, batch, batch_idx):
         samples, target = batch
         samples = samples.to(self.device, dtype=torch.float)  # (B,S,V)
-        target = target.to(self.device)
+        target = target.to(self.device, dtype=torch.long)
 
         # TODO: Train the RNN model on one batch of data.
         outputs = self.model(samples)
@@ -44,7 +45,7 @@ class UnetDACLighting(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         samples, target = batch
         samples = samples.to(self.device, dtype=torch.float)  # (B,S,V)
-        target = target.to(self.device)
+        target = target.to(self.device, dtype=torch.long)
 
         outputs = self.model(samples)
         loss = self.loss_fn(outputs, target // ANGLE_RES)
@@ -56,8 +57,9 @@ class UnetDACLighting(L.LightningModule):
         samples, ref_stft, target, mixed_signals, perceived_signals = batch
 
         samples = samples.to(self.device, dtype=torch.float)  # (B,S,V)
-        target = target.to(self.device)
+        target = target.to(self.device, dtype=torch.long)
         probs = self.model(samples)
+        probs = F.softmax(probs, dim=1) # dim=1 refers to the 13 possible DOAs
 
         batch_dict = {
             'ref_stft': ref_stft,
