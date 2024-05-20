@@ -340,7 +340,8 @@ def calculate_rtf(mic_signals, discard_dc=True):
     rtf = non_ref_mics / (avg_ref_mic + EPS)
 
     # Complex values -> real and imaginary parts
-    rtf = torch.cat((torch.real(rtf), torch.imag(rtf)), dim=1)
+    rtf_angles = torch.angle(rtf)
+    rtf = torch.cat((torch.cos(rtf_angles), torch.sin(rtf_angles)), dim=1)
 
     # Get magnitude tensor of the reference microphone
     # ref_stft = ref_mic.squeeze(axis=-1).abs() # XXX: old
@@ -491,11 +492,12 @@ def generate_coords_rirs_test(num_scenarios: int, allowed_radii: Tuple[float], r
       pairs of (x, y) coordinates for each scenario.
     - DOAs (torch.Tensor): Tensor of shape (num_scenarios, 2) containing pairs of DOAs.
     - rir (torch.Tensor): Tensor of RIRs of shape (num_scenarios, 2, NUM_MICS, NSAMPLE)
+    - rir (torch.Tensor): Tensor of RIRs of shape (num_scenarios, 2, NUM_MICS, NSAMPLE)
+    - rir (torch.Tensor): Tensor of RIRs of shape (num_scenarios, 2, NUM_MICS, NSAMPLE)
 
     """
 
     # Generate random angles
-    
     timit_rir_gen = TimitRIR(base_dir=TIMIT_RIR_PATH)
     df = timit_rir_gen.sample(num_scenarios, allowed_radii=allowed_radii, returned_reverbs_values=returned_reverbs_values)
     global_rirs = timit_rir_gen.dir_meta_df
@@ -521,8 +523,10 @@ def generate_coords_rirs_test(num_scenarios: int, allowed_radii: Tuple[float], r
     coordinates = torch.stack((x_coords, y_coords), dim=-1).to(device)
     # rirs = torch.stack(df.rir.tolist()).to(device)
     # rirs = rirs.view(num_scenarios, 2, NUM_MICS, -1)
+    radii = torch.tensor(df.radius.values, device=device).reshape(-1, 2)
+    reverbs = torch.tensor(df.reverb.values, device=device).reshape(-1, 2)
 
-    return coordinates, angles, rirs
+    return coordinates, angles, rirs, radii, reverbs
 
 def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSpeech/dev-clean',
                    normalize=True, discard_dc=True, signal_length=SIGNAL_LEN, signal_fs=FS,
@@ -557,13 +561,13 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
             x_coords = source_positions[:,:,0]
             y_coords = source_positions[:,:,1]
             x_coords_clip = torch.clip(x_coords, SPEAKER_MIN_DISTANCE_FROM_WALL, ROOM_DIMENSIONS[0]- SPEAKER_MIN_DISTANCE_FROM_WALL)
-            y_coords_clip = torch.clip(y_coords, SPEAKER_MIN_DISTANCE_FROM_WALL, ROOM_DIMENSIONS[0]- SPEAKER_MIN_DISTANCE_FROM_WALL)
+            y_coords_clip = torch.clip(y_coords, SPEAKER_MIN_DISTANCE_FROM_WALL, ROOM_DIMENSIONS[1]- SPEAKER_MIN_DISTANCE_FROM_WALL)
             if not torch.all(y_coords == y_coords_clip):
-                print('Dammmn error rir y coords')
+                logger.debug('Dammmn error rir y coords')
                 cache_path.unlink()
                 return None
             if not torch.all(x_coords == x_coords_clip):
-                print('Dammmn error rir x coords')
+                logger.debug('Dammmn error rir x coords')
                 cache_path.unlink()
                 return None
         else:
@@ -583,9 +587,9 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
         # DONE: expand generate_coords to return radii too, or use something else
         logger.debug('Batch type is test')
         logger.debug('Generating coords...')
-        source_positions, doas, rirs = generate_coords_rirs_test(num_scenarios=batch_size,
-                                                                 allowed_radii=TEST_RADII,
-                                                                 returned_reverbs_values=TEST_REVERB_TIMES)
+        source_positions, doas, rirs, radii, reverbs = generate_coords_rirs_test(num_scenarios=batch_size,
+                                                                                 allowed_radii=TEST_RADII,
+                                                                                 returned_reverbs_values=TEST_REVERB_TIMES)
 
 
     # DONE: load batch_size/2 RIRs with T60=0.160s and batch_size/2 RIRs with T60=0.160s
@@ -631,7 +635,9 @@ def generate_batch(batch_size=64, test=False, source_dir='source_signals/LibriSp
             'ref_stft': ref_stft.cpu().detach(),
             'perceived_signals': perceived_signals[:, :, 0].cpu().detach(),
             'mixed_signals': mixed_signals.cpu().detach(),
-            'doas': doas.cpu()
+            'doas': doas.cpu(),
+            'radii': radii.cpu(),
+            'reverbs': reverbs.cpu()
         })
                
     return results
@@ -643,7 +649,7 @@ def parse_args():
     parser.add_argument("--train-num-batches", type=int, default=94, help="Number of train batches")
     parser.add_argument("--signal-length-train", type=int, default=int(FS*0.6), help='Signal length on train')
     parser.add_argument("--reverb-tail-train", type=int, default=int(FS*0.16), help="Length of reverb tail for perceived train signals")
-    parser.add_argument("--rir-cache-dir-train", type=str, default=None,  help="Cache directory to save synthetic RIRs for the train nset, at or load from")
+    parser.add_argument("--rir-cache-dir-train", type=str, default='rir_cache_train',  help="Cache directory to save synthetic RIRs for the train nset, at or load from")
 
     parser.add_argument("--input-validation", type=str, default='source_signals/LibriSpeech/train-clean-100', help='Data directory or validation')
     parser.add_argument("--validation-batch-size", type=int, default=64, help="Batch size for validation batches")
@@ -656,7 +662,7 @@ def parse_args():
     parser.add_argument("--test-batch-size", type=int, default=60, help="Batch size for test batches") # 30x2 = 60
     parser.add_argument("--test-num-batches", type=int, default=1, help="Number of test batches")
     parser.add_argument("--signal-length-test", type=int, default=int(FS*2), help='Signal length on test')
-    parser.add_argument("--reverb-tail-test", type=int, default=int(FS*0.16), help="Length of reverb tail for perceived test signals")
+    parser.add_argument("--reverb-tail-test", type=int, default=int(FS*0.168), help="Length of reverb tail for perceived test signals")
 
     parser.add_argument("-o", "--output-dir", type=str, default='data_batches', help='Output directory for data batches')
     parser.add_argument("-f", "--force-rewrite", type=bool, default=False, help='Overwrite existing data')
@@ -681,7 +687,7 @@ def main():
         existing_train_batches = 0
         with tqdm(total=args.train_num_batches, desc='Creating train batches') as pb:
             for i in range(args.train_num_batches):
-                output_path = os.path.join(args.output_dir, f'train06r076v2tmp_{i}.pt')
+                output_path = os.path.join(args.output_dir, f'train06r076v3_{i}.pt')
                 if not args.force_rewrite and Path(output_path).exists():
                     logger.debug(f'Skipping {output_path} - already exists')
                     existing_train_batches += 1
@@ -707,7 +713,7 @@ def main():
         existing_validation_batches = 0
         with tqdm(total=args.validation_num_batches, desc='Creating validation batches') as pb:
             for i in range(args.validation_num_batches):
-                output_path = os.path.join(args.output_dir, f'validation06r076v2tmp_{i}.pt')
+                output_path = os.path.join(args.output_dir, f'validation06r076v3_{i}.pt')
                 if not args.force_rewrite and Path(output_path).exists():
                     logger.debug(f'Skipping {output_path} - already exists')
                     existing_validation_batches += 1
@@ -734,7 +740,7 @@ def main():
         existing_test_batches = 0
         with tqdm(total=args.test_num_batches, desc='Creating test batches') as pb:
             for i in range(args.test_num_batches):
-                output_path = os.path.join(args.output_dir, f'test2r0.76v2tmp_{i}.pt')
+                output_path = os.path.join(args.output_dir, f'test2r0168v4_{i}.pt')
                 if not args.force_rewrite and Path(output_path).exists():
                     logger.debug(f'Skipping test {i} - already exists')
                     existing_test_batches += 1

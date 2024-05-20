@@ -58,7 +58,7 @@ def bss_eval(ref, est):
 			est=est.unsqueeze(-2),
 			# filter_length: Optional[int] = 512,
 			# use_cg_iter: Optional[int] = None,
-			# zero_mean: Optional[bool] = False,
+			zero_mean = True,
 			# clamp_db: Optional[float] = None,
 			compute_permutation=False,
 			# load_diag: Optional[float] = None,
@@ -81,9 +81,6 @@ def bss_eval(ref, est):
 		avg_sir = torch.tensor(np.mean(sir, axis=1))
 	
 	return torch.stack((avg_sdr, avg_sir), dim=1)
-
-
-
 
 
 class SeparatedSource:
@@ -130,7 +127,8 @@ class SeparatedSource:
 		est = self.signal().unsqueeze(0)
 		
 		# Reshape result (n_src=1, SDR_or_SIR=2) -> (SDR_or_SIR=2,)
-		return bss_eval(ref, est).squeeze(0)
+		result_metrics = bss_eval(ref, est).squeeze(0)
+		return result_metrics
 	
 	@classmethod
 	def speaker_angles(cls, sources):

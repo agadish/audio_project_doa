@@ -49,3 +49,6 @@ TEST_REVERB_TIMES = (0.16, 0.36)
 TEST_RADII = (1.0, 2.0)  # Allowed radii for test set
 # SIGNAL_LEN = NUMBER_OF_FRAMES * HOP_LENGTH + int(NFFT * (1 - OVERLAP)) # Fixed length of audio signals [samples]
 MAX_WORKERS = 10
+
+MODEL_L = 96
+MODEL_K = 256

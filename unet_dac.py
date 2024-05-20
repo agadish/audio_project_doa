@@ -3,10 +3,10 @@ import torch.nn as nn
 # from torchvision import models
 import torch.nn.functional as F
 from tqdm import tqdm
-from config import NUM_CLASSES
+from config import NUM_CLASSES, MODEL_L, MODEL_K, NUM_MICS
 
 class UnetDAC(nn.Module):
-    def __init__(self, L: int, K: int, M: int, num_classes: int = NUM_CLASSES, dropout_probability: float = 0.25):
+    def __init__(self, L: int = MODEL_L, K: int = MODEL_K, M: int = NUM_MICS, num_classes: int = NUM_CLASSES, dropout_probability: float = 0.25):
         super().__init__()
         self.L = L
         self.K = K

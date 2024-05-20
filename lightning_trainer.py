@@ -24,21 +24,18 @@ class UnetDACLighting(L.LightningModule):
         # output_angle = torch.argmax(output_directions, axis=1)
         loss = self.loss_fn(outputs, target // ANGLE_RES)
         self.log("train_loss", loss, prog_bar=True, on_step=True, on_epoch=True)
+        self.log("lr", self.optimizers().param_groups[0]['lr'], prog_bar=True, on_step=False, on_epoch=True)
 
         return loss
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=2, verbose=True)
         return {
             'optimizer': optimizer,
             'lr_scheduler': {
                 'scheduler': scheduler,
                 'monitor': 'val_loss',  # Monitor validation loss for adjusting LR
-                'mode': 'min',  # Minimize validation loss
-                'factor': 0.1,  # Multiply LR by 0.1 when triggered
-                'patience': 10,  # Wait for 10 epochs before reducing LR
-                'verbose': True  # Print updates
             }
         }
     
@@ -54,12 +51,15 @@ class UnetDACLighting(L.LightningModule):
         return loss
 
     def test_step(self, batch, batch_idx):
-        samples, ref_stft, target, mixed_signals, perceived_signals = batch
+        samples, ref_stft, target, mixed_signals, perceived_signals, radii, reverbs = batch
+        n_samples = samples.size(0)
 
         samples = samples.to(self.device, dtype=torch.float)  # (B,S,V)
         target = target.to(self.device, dtype=torch.long)
         probs = self.model(samples)
         probs = F.softmax(probs, dim=1) # dim=1 refers to the 13 possible DOAs
+        radii = radii.to(self.device)
+        reverbs = reverbs.to(self.device)
 
         batch_dict = {
             'ref_stft': ref_stft,
@@ -70,14 +70,29 @@ class UnetDACLighting(L.LightningModule):
         
         batch_mix = mixed_batch_metrics(batch_dict)
         batch_sep = separated_batch_metrics(batch_dict)
-        avg_mix = batch_mix.mean(dim=0)
-        avg_sep = batch_sep.mean(dim=0)
-        for i in range(avg_mix.size(0)):
-            for j in range(avg_mix.size(1)):
-                self.log(f'avg_mix_{i}_{j}', avg_mix[i, j].item(), prog_bar=True, on_step=True, on_epoch=True)
 
-        for i in range(avg_sep.size(0)):
-            for j in range(avg_sep.size(1)):
-                self.log(f'avg_sep_{i}_{j}', avg_sep[i, j].item(), prog_bar=True, on_step=True, on_epoch=True)
+        avg_mix_groups = {}
+        avg_sep_groups = {}
+
+        for i in range(n_samples):
+            key = f"rad{radii[i][0].item()}_rev{reverbs[i][0].item()}" # Assuming [0] same as [1]
+            avg_mix_groups.setdefault(f"mix_{key}", []).append(batch_mix[i])
+            avg_sep_groups.setdefault(f"sep_{key}", []).append(batch_sep[i])
         
-        return {'avg_mix': avg_mix, 'avg_sep': avg_sep}
+        avg_mix = {group: torch.mean(torch.stack(values), axis=0) for group, values in avg_mix_groups.items()}
+        avg_sep = {group: torch.mean(torch.stack(values), axis=0) for group, values in avg_sep_groups.items()}
+
+        for group_name, value in avg_mix.items():
+            for i in range(value.size(0)):
+                for j in range(value.size(1)):
+                    self.log(f'{group_name}_{i}_{j}', value[i, j].item(), prog_bar=True, on_step=True, on_epoch=True)
+
+        for group_name, value in avg_sep.items():
+            for i in range(value.size(0)):
+                for j in range(value.size(1)):
+                    self.log(f'{group_name}_{i}_{j}', value[i, j].item(), prog_bar=True, on_step=True, on_epoch=True)
+
+        result = avg_mix.copy()
+        result.update(avg_sep)
+        return result
+    
