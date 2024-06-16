@@ -8,11 +8,15 @@ from torch.utils.data import DataLoader
 from lightning_trainer import UnetDACLighting
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.loggers import WandbLogger, TensorBoardLogger
+import lightning as L
+import torch.nn.functional as F
+from pathlib import Path
 
 from audio_dataset import DictTorchPartedDataset, PinDictTorchPartedDataset
 
 from unet_dac import UnetDAC
-import lightning as L
+from metrics import save_batch_visualization
+
 
 def init_logger():
     logger.remove()
@@ -42,6 +46,7 @@ def parse_args():
     parser.add_argument('--test', action='store_true', help='Enable testing mode')
     parser.add_argument('--test-pt-prefix', type=str, default='test2r0168v4', help='Prefix of test'
                         ' data "[prefix]_[index].pt" files on data dir (default: "test2r0168v4")')
+    parser.add_argument('--test-examples-output-path', type=str, default='', help='Path to save test examples at. If empty, they will not be saved')
 
     # Common args
     parser.add_argument('--checkpoint-path', type=str, default='',
@@ -125,6 +130,32 @@ def main():
                                                  device=device)
         test_dataloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
         trainer.test(model_lighting, dataloaders=test_dataloader)
+
+        if args.test_examples_output_path:
+            Path(args.test_examples_output_path).mkdir(exist_ok=True)
+            # test_dataloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+            batch_idx = 0
+            for batch in test_dataloader:
+                samples, ref_stft, target, mixed_signals, perceived_signals, radii, reverbs = batch
+                n_samples = samples.size(0)
+
+                samples = samples.to(device, dtype=torch.float)  # (B,S,V)
+                target = target.to(device, dtype=torch.long)
+                probs = model(samples).to(device)
+                probs = F.softmax(probs, dim=1) # dim=1 refers to the 13 possible DOAs
+                radii = radii.to(device)
+                reverbs = reverbs.to(device)
+
+                batch_dict = {
+                    'ref_stft': ref_stft.to(device),
+                    'mixed_signals': mixed_signals,
+                    'perceived_signals': perceived_signals,
+                    'probs': probs
+                }
+
+                save_batch_visualization(batch_dict, output_dir=args.test_examples_output_path, batch_idx=batch_idx)
+                batch_idx += 1
+
 
 
 if __name__ == '__main__':

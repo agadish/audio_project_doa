@@ -3,6 +3,9 @@ import torch
 from torchaudio.transforms import Spectrogram, InverseSpectrogram
 from torchaudio import save
 import numpy as np
+import os
+import matplotlib.pyplot as plt
+import librosa
 
 import config
 
@@ -159,7 +162,7 @@ class SeparatedSource:
 	def save(self, path):
 		save(
 			uri=path,
-			src=self.signal().unsqueeze(0),
+			src=self.signal().unsqueeze(0).cpu().detach(),
 			sample_rate=config.FS
 		)
 
@@ -220,6 +223,71 @@ def mixed_batch_metrics(batch):
 	result = bss_eval(ref=refs, est=ests)
 	result = result.view(-1, 2, 2)
 	return result
+
+
+def plot_comparison_graph_all(stfts):
+    fig, axes = plt.subplots(len(stfts), 1, figsize=(10, 8))
+
+    for ax, stft in zip(axes, stfts):
+        stft_db = librosa.amplitude_to_db(abs(stft), ref=np.max)
+
+        spec = librosa.display.specshow(
+            stft_db,
+            sr=config.FS,
+            n_fft=config.NFFT,
+            win_length=config.NFFT,
+            hop_length=config.HOP_LENGTH,
+            y_axis='linear',
+            x_axis='time',
+            ax=ax
+        )
+
+        fig.colorbar(
+            spec,
+            ax=ax.axes,
+            format="%+2.0f dB",
+            # orientation='horizontal'
+        )
+
+        ax.set_ylabel("Frequency [Hz]")
+
+        # ax.set_xlim([0, duration])
+        ax.set_xlabel("Time [sec]")
+
+    fig.tight_layout()
+    return fig
+
+
+def save_batch_visualization(batch, output_dir='.', batch_idx: int = 0):
+    """Returns a tensor with shape=
+    (batch_size, speaker_num, sdr_or_sir).
+    """
+    samples = zip(
+        batch['ref_stft'],
+        batch['probs'],
+		batch['perceived_signals'],
+		batch['mixed_signals']
+    )
+    
+    for smp_num, (ref_spec, samp_probs, perceived_signals, mixed_signals) in enumerate(samples):
+        speakers = SeparatedSource.speakers(ref_spec[1:], samp_probs)
+        save(uri=os.path.join(output_dir, f"batch{batch_idx}_sample{smp_num}_mixed.wav"),
+			 src=mixed_signals,
+			 sample_rate=config.FS)
+        for spk_num, speaker in enumerate(speakers):
+            speaker.save(os.path.join(output_dir, f"batch{batch_idx}_sample{smp_num}_separated_speaker{spk_num}.wav"))
+            save(uri=os.path.join(output_dir, f"batch{batch_idx}_sample{smp_num}_perceived_speaker{spk_num}.wav"),
+				 src=perceived_signals[spk_num].unsqueeze(0),
+				 sample_rate=config.FS)
+
+        fig = plot_comparison_graph_all([
+            stft(perceived_signals[0].to(config.DEVICE)).detach().cpu().numpy(),
+            stft(perceived_signals[1].to(config.DEVICE)).detach().cpu().numpy(),
+            stft(mixed_signals[0].cpu().to(config.DEVICE)).detach().cpu().numpy(),
+            stft(speakers[0].signal().to(config.DEVICE)).detach().cpu().numpy(),
+            stft(speakers[1].signal().to(config.DEVICE)).detach().cpu().numpy()
+        ])
+        fig.savefig(os.path.join(output_dir, f"batch{batch_idx}_sample{smp_num}_fig_perceived0_perceived1_mixed_sep0_sep1.png"))
 
 
 def print_batch_metrics(batch, verbose=False):
